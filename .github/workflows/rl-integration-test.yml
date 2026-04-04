@@ -34,7 +34,7 @@ jobs:
       - name: Start RL server
         working-directory: android/assets
         run: |
-          java -jar ../../server/build/libs/UncivServer.jar --rl --no-auth --no-chat -p 8080 &
+          java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8080 &
           echo $! > /tmp/server.pid
           echo "Server PID: $(cat /tmp/server.pid)"
 
