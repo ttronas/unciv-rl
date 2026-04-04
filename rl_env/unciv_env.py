@@ -30,7 +30,7 @@ from typing import Any
 
 import numpy as np
 from pettingzoo import AECEnv
-from pettingzoo.utils.agent_selector import agent_selector
+from pettingzoo.utils import AgentSelector
 
 from rl_env.action_mapper import decode_action_result, encode_action
 from rl_env.client import UncivRLClient
@@ -125,7 +125,9 @@ class UncivEnv(AECEnv):
         self._cumulative_rewards: dict[str, float] = {}
 
         self._last_obs: dict[str, dict] = {}
-        self._agent_selector: agent_selector | None = None
+        self._agent_selector: AgentSelector | None = None
+        self._obs_space_cache: dict[str, Any] = {}
+        self._action_space_cache: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Spaces (built lazily after reset())
@@ -134,20 +136,20 @@ class UncivEnv(AECEnv):
     @property
     def observation_spaces(self) -> dict[str, Any]:
         self._require_reset()
-        return {agent: self._spaces.observation_space() for agent in self.possible_agents}
+        return dict(self._obs_space_cache)
 
     @property
     def action_spaces(self) -> dict[str, Any]:
         self._require_reset()
-        return {agent: self._spaces.action_space() for agent in self.possible_agents}
+        return dict(self._action_space_cache)
 
     def observation_space(self, agent: str) -> Any:
         self._require_reset()
-        return self._spaces.observation_space()
+        return self._obs_space_cache[agent]
 
     def action_space(self, agent: str) -> Any:
         self._require_reset()
-        return self._spaces.action_space()
+        return self._action_space_cache[agent]
 
     # ------------------------------------------------------------------
     # PettingZoo core API
@@ -194,13 +196,16 @@ class UncivEnv(AECEnv):
             num_production_items=max(len(catalogues.get("productionItemNames", [])), 1),
         )
 
+        self._obs_space_cache = {a: self._spaces.observation_space() for a in self.possible_agents}
+        self._action_space_cache = {a: self._spaces.action_space() for a in self.possible_agents}
+
         self.rewards = {a: 0.0 for a in self.agents}
         self._cumulative_rewards = {a: 0.0 for a in self.agents}
         self.terminations = {a: False for a in self.agents}
         self.truncations = {a: False for a in self.agents}
         self.infos = {a: {} for a in self.agents}
 
-        self._agent_selector = agent_selector(self.agents)
+        self._agent_selector = AgentSelector(self.agents)
         self.agent_selection = response["currentAgent"]
 
         # Fetch initial observations and masks for all agents
@@ -390,7 +395,7 @@ class UncivEnv(AECEnv):
         if agent in self.agents:
             self.agents.remove(agent)
         if self.agents:
-            self._agent_selector = agent_selector(self.agents)
+            self._agent_selector = AgentSelector(self.agents)
             self.agent_selection = self._agent_selector.next()
         else:
             self.agent_selection = ""
