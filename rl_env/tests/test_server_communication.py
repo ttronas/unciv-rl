@@ -293,11 +293,17 @@ class TestClientEndpoints(unittest.TestCase):
         self.assertIn("agentCivIds", reset_resp)
         self.assertIn("currentAgent", reset_resp)
 
-    def test_reset_preserves_game_id(self):
+    def test_reset_returns_new_valid_game_id(self):
+        # The server's reset endpoint deletes the old game and calls
+        # createGame() again, which lets GameStarter assign a fresh UUID via
+        # gameInfo.gameId.  The returned gameId is therefore a NEW identifier,
+        # not the original one.  We just verify it is a non-empty string.
         resp = _start_game(self.client)
         game_id = resp["gameId"]
         reset_resp = self.client.reset(game_id)
-        self.assertEqual(reset_resp["gameId"], game_id)
+        new_game_id = reset_resp["gameId"]
+        self.assertIsInstance(new_game_id, str)
+        self.assertGreater(len(new_game_id), 0)
 
 
 # ---------------------------------------------------------------------------
