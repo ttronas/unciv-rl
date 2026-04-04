@@ -184,6 +184,12 @@ private class UncivServerRunner : CliktCommand() {
         help = "Display each operation archive request IP to assist management personnel"
     ).flag("-no-Identify", default = false)
 
+    private val rlEnabled by option(
+        "--rl",
+        envvar = "UncivServerRL",
+        help = "Enable RL environment endpoints (/rl/*). Requires game assets (jsons/) in the working directory."
+    ).flag("--no-rl", default = false)
+
     lateinit var isAliveInfo: IsAliveInfo
 
     override fun run() {
@@ -191,6 +197,11 @@ private class UncivServerRunner : CliktCommand() {
             authVersion = if (authV1Enabled) 1 else 0,
             chatVersion = if (chatV1Enabled) 1 else 0,
         )
+        if (rlEnabled) {
+            echo("RL mode enabled – initialising game engine…")
+            RLGameManager.initialise()
+            echo("Game engine ready.")
+        }
         serverRun(port, folder)
     }
 
@@ -433,6 +444,130 @@ private class UncivServerRunner : CliktCommand() {
                         } finally {
                             println("An WebSocket session closed normally.")
                             wsSessionManager.cleanupSession(this)
+                        }
+                    }
+                }
+
+                // ---- RL endpoints (unauthenticated, only active when --rl flag is set) ----
+                if (rlEnabled) {
+                    route("/rl") {
+                        /** POST /rl/new_game – create a new RL game. */
+                        post("/new_game") {
+                            val request = call.receive<NewGameRequest>()
+                            val state = withContext(Dispatchers.Default) {
+                                RLGameManager.createGame(request)
+                            }
+                            val gameInfo = state.gameInfo
+                            val obs = withContext(Dispatchers.Default) {
+                                buildObservation(gameInfo, gameInfo.currentPlayer,
+                                    state.agentCivIds, state.includeMapPlanes)
+                            }
+                            call.respond(NewGameResponse(
+                                gameId = gameInfo.gameId,
+                                agentCivIds = state.agentCivIds,
+                                currentAgent = gameInfo.currentPlayer,
+                                observation = obs
+                            ))
+                        }
+
+                        /** GET /rl/state/{gameId} – get the observation for the current agent. */
+                        get("/state/{gameId}") {
+                            val gameId = call.parameters["gameId"]
+                                ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing gameId")
+                            val state = RLGameManager.getGame(gameId)
+                                ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            val gameInfo = state.gameInfo
+                            val obs = withContext(Dispatchers.Default) {
+                                buildObservation(gameInfo, gameInfo.currentPlayer,
+                                    state.agentCivIds, state.includeMapPlanes)
+                            }
+                            call.respond(obs)
+                        }
+
+                        /** POST /rl/action/{gameId} – execute an action for the current agent. */
+                        post("/action/{gameId}") {
+                            val gameId = call.parameters["gameId"]
+                                ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing gameId")
+                            val state = RLGameManager.getGame(gameId)
+                                ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            val action = call.receive<RLAction>()
+                            val gameInfo = state.gameInfo
+
+                            val result = withContext(Dispatchers.Default) {
+                                val snapshot = buildEntitySnapshot(gameInfo)
+                                val actionResult = executeAction(
+                                    gameInfo, gameInfo.currentPlayer, action, snapshot)
+
+                                if (actionResult.success && action.macro == MacroAction.END_TURN) {
+                                    val prevScores = state.previousScores
+                                    RLGameManager.endCurrentAgentTurn(state)
+                                    val newScores = state.agentCivIds.associateWith { id ->
+                                        gameInfo.getCivilizationOrNull(id)
+                                            ?.calculateTotalScore()?.toInt() ?: 0
+                                    }
+                                    state.previousScores = newScores
+                                    val reward = (newScores[gameInfo.currentPlayer] ?: 0) -
+                                        (prevScores[gameInfo.currentPlayer] ?: 0)
+                                    actionResult.copy(reward = reward.toFloat())
+                                } else actionResult
+                            }
+                            call.respond(result)
+                        }
+
+                        /** GET /rl/action_mask/{gameId} – compute the legal action mask. */
+                        get("/action_mask/{gameId}") {
+                            val gameId = call.parameters["gameId"]
+                                ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing gameId")
+                            val state = RLGameManager.getGame(gameId)
+                                ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            val gameInfo = state.gameInfo
+                            val mask = withContext(Dispatchers.Default) {
+                                val snapshot = buildEntitySnapshot(gameInfo)
+                                computeActionMask(gameInfo, gameInfo.currentPlayer,
+                                    state.agentCivIds, snapshot)
+                            }
+                            call.respond(mask)
+                        }
+
+                        /** POST /rl/reset/{gameId} – reset the game to a fresh state. */
+                        post("/reset/{gameId}") {
+                            val gameId = call.parameters["gameId"]
+                                ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing gameId")
+                            val oldState = RLGameManager.getGame(gameId)
+                                ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            RLGameManager.removeGame(gameId)
+                            val newState = withContext(Dispatchers.Default) {
+                                RLGameManager.createGame(oldState.setupRequest)
+                            }
+                            val gameInfo = newState.gameInfo
+                            val obs = withContext(Dispatchers.Default) {
+                                buildObservation(gameInfo, gameInfo.currentPlayer,
+                                    newState.agentCivIds, newState.includeMapPlanes)
+                            }
+                            call.respond(ResetResponse(
+                                gameId = gameInfo.gameId,
+                                agentCivIds = newState.agentCivIds,
+                                currentAgent = gameInfo.currentPlayer,
+                                observation = obs
+                            ))
+                        }
+
+                        /** GET /rl/done/{gameId} – check whether the game has ended. */
+                        get("/done/{gameId}") {
+                            val gameId = call.parameters["gameId"]
+                                ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing gameId")
+                            val state = RLGameManager.getGame(gameId)
+                                ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            val gameInfo = state.gameInfo
+                            call.respond(DoneResponse(
+                                gameId = gameId,
+                                done = gameInfo.victoryData != null,
+                                winner = gameInfo.victoryData?.winningCiv,
+                                scores = state.agentCivIds.associateWith { id ->
+                                    gameInfo.getCivilizationOrNull(id)
+                                        ?.calculateTotalScore()?.toInt() ?: 0
+                                }
+                            ))
                         }
                     }
                 }

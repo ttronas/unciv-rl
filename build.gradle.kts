@@ -141,6 +141,11 @@ project(":server") {
         // clikt somehow needs this
         "implementation"("net.java.dev.jna:jna:$jnaVersion")
         "implementation"("net.java.dev.jna:jna-platform:$jnaVersion")
+
+        // RL game-engine support: core game logic + headless LibGDX backend
+        "implementation"(project(":core"))
+        "implementation"("com.badlogicgames.gdx:gdx-backend-headless:$gdxVersion")
+        "implementation"("com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop")
     }
 }
 
