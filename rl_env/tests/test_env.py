@@ -16,9 +16,7 @@ Integration tests (require a running Unciv server with --rl flag)
 from __future__ import annotations
 
 import os
-import sys
 import unittest
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -277,7 +275,6 @@ class TestSpaces(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 _SERVER_URL = os.environ.get("UNCIV_RL_URL", "http://localhost:8080")
-_SKIP_INTEGRATION = True  # set to False if the server is running
 
 
 def _server_available() -> bool:
@@ -289,8 +286,10 @@ def _server_available() -> bool:
         return False
 
 
-@unittest.skipUnless(_server_available() and not _SKIP_INTEGRATION,
-                     "Unciv RL server not available or integration tests disabled")
+@unittest.skipUnless(
+    _server_available(),
+    "Unciv RL server not available; set UNCIV_RL_URL and ensure the server is running with --rl"
+)
 class TestIntegrationEnv(unittest.TestCase):
     """End-to-end integration tests that require a running server."""
 

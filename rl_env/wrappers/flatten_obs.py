@@ -45,5 +45,6 @@ class FlattenObsWrapper(BaseWrapper):
         flat_obs = {agent: self._flatten(obs) for agent, obs in observations.items()}
         return flat_obs, infos
 
-    def step(self, action):
+    def step(self, action) -> None:
+        """Delegate to the wrapped AECEnv; returns None per PettingZoo AEC convention."""
         self.env.step(action)

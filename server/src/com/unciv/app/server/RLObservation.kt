@@ -11,8 +11,6 @@ import com.unciv.ui.screens.victoryscreen.RankingType
 import kotlinx.serialization.Serializable
 import kotlin.math.roundToInt
 
-// Suppress unused import – DiplomaticStatus.War is referenced via property access below
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------

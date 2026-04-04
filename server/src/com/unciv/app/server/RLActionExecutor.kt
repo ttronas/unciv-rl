@@ -304,12 +304,12 @@ private fun executeCityAction(
         CitySubAction.BUY_PRODUCTION -> {
             val itemName = productionList.getOrNull(action.arg1)
                 ?: return ActionResult(false, "Production item index ${action.arg1} out of range")
-            val construction = (ruleset.buildings[itemName] ?: ruleset.units[itemName])
+            val purchasableConstruction = (ruleset.buildings[itemName] ?: ruleset.units[itemName])
                 as? com.unciv.models.ruleset.INonPerpetualConstruction
                 ?: return ActionResult(false, "'$itemName' not purchasable")
-            if (!construction.canBePurchasedWithStat(city, com.unciv.models.stats.Stat.Gold))
+            if (!purchasableConstruction.canBePurchasedWithStat(city, com.unciv.models.stats.Stat.Gold))
                 return ActionResult(false, "Cannot purchase $itemName with gold in this city")
-            val goldCost = construction.getStatBuyCost(city, com.unciv.models.stats.Stat.Gold)
+            val goldCost = purchasableConstruction.getStatBuyCost(city, com.unciv.models.stats.Stat.Gold)
                 ?: return ActionResult(false, "No gold cost for $itemName")
             if (civ.gold < goldCost)
                 return ActionResult(false, "Insufficient gold ($goldCost required, ${civ.gold} available)")

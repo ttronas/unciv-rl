@@ -182,5 +182,12 @@ def _parse_map_planes(map_planes_json: dict[str, Any] | None) -> np.ndarray:
     # data is stored as channel × tileCount (flat)
     expected = channels * tile_count
     if len(raw) < expected:
+        import warnings
+        warnings.warn(
+            f"MapPlanes data has {len(raw)} elements but expected {expected} "
+            f"({channels} channels × {tile_count} tiles). Padding with zeros.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         raw = np.pad(raw, (0, expected - len(raw)))
     return raw[:expected].reshape(channels, tile_count)

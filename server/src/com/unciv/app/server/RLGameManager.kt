@@ -144,6 +144,8 @@ object RLGameManager {
         val gameInfo = GameStarter.startNewGame(setup)
 
         // Identify the civIDs assigned to Human (RL-agent) players
+        # Spectators are excluded because they don't participate in the game
+        # and should not receive RL observations or perform actions
         val agentCivIds: List<String> = gameInfo.civilizations
             .filter { it.playerType == PlayerType.Human && !it.isSpectator() }
             .map { it.civID }

@@ -34,7 +34,13 @@ from pettingzoo.utils import agent_selector
 
 from rl_env.action_mapper import decode_action_result, encode_action
 from rl_env.client import UncivRLClient
-from rl_env.constants import MACRO_END_TURN
+from rl_env.constants import (
+    ENTITY_FEATURES,
+    MACRO_END_TURN,
+    MAX_ENTITIES,
+    N_MAP_CHANNELS,
+    N_SCALAR_FEATURES,
+)
 from rl_env.obs_parser import parse_action_mask, parse_observation
 from rl_env.spaces import UncivSpaces
 
@@ -333,10 +339,10 @@ class UncivEnv(AECEnv):
         return self._last_obs.get(
             agent,
             {
-                "scalars": np.zeros(14, dtype=np.float32),
-                "entities": np.zeros((512, 25), dtype=np.float32),
-                "map_planes": np.zeros((11, 512), dtype=np.float32),
-                "visibility_mask": np.zeros(512, dtype=np.int8),
+                "scalars": np.zeros(N_SCALAR_FEATURES, dtype=np.float32),
+                "entities": np.zeros((MAX_ENTITIES, ENTITY_FEATURES), dtype=np.float32),
+                "map_planes": np.zeros((N_MAP_CHANNELS, MAX_ENTITIES), dtype=np.float32),
+                "visibility_mask": np.zeros(MAX_ENTITIES, dtype=np.int8),
                 "action_mask": {},
             },
         )
