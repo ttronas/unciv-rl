@@ -30,7 +30,7 @@ from typing import Any
 
 import numpy as np
 from pettingzoo import AECEnv
-from pettingzoo.utils import agent_selector
+from pettingzoo.utils.agent_selector import agent_selector
 
 from rl_env.action_mapper import decode_action_result, encode_action
 from rl_env.client import UncivRLClient
