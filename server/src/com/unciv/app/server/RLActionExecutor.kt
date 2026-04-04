@@ -397,11 +397,11 @@ private fun executeDiplomacyAction(
             openBordersTrade.ourOffers.add(
                 com.unciv.logic.trade.TradeOffer(
                     com.unciv.Constants.openBorders,
-                    com.unciv.logic.trade.TradeOfferType.Agreement, 30))
+                    com.unciv.logic.trade.TradeOfferType.Agreement, duration = 30))
             openBordersTrade.theirOffers.add(
                 com.unciv.logic.trade.TradeOffer(
                     com.unciv.Constants.openBorders,
-                    com.unciv.logic.trade.TradeOfferType.Agreement, 30))
+                    com.unciv.logic.trade.TradeOfferType.Agreement, duration = 30))
             dm.trades.add(openBordersTrade)
             dm.otherCivDiplomacy().trades.add(openBordersTrade)
             dm.updateHasOpenBorders()

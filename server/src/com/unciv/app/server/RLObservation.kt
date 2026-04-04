@@ -7,6 +7,7 @@ import com.unciv.logic.civilization.diplomacy.DiplomaticStatus
 import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.tile.RoadStatus
 import com.unciv.logic.map.tile.Tile
+import com.unciv.models.ruleset.tile.TerrainType
 import com.unciv.ui.screens.victoryscreen.RankingType
 import kotlinx.serialization.Serializable
 import kotlin.math.roundToInt
@@ -211,7 +212,7 @@ fun buildObservation(
     // ---- catalogues -------------------------------------------------------
     val terrainList = ruleset.terrains.keys.sorted()
     val featureList = listOf("") + ruleset.terrains.values
-        .filter { it.type.isTerrainFeature }.map { it.name }.sorted()
+        .filter { it.type == TerrainType.TerrainFeature }.map { it.name }.sorted()
     val resourceList = listOf("") + ruleset.tileResources.keys.sorted()
     val improvementList = listOf("") + ruleset.tileImprovements.keys.sorted()
     val techList = ruleset.technologies.keys.sorted()
@@ -252,7 +253,7 @@ fun buildObservation(
     }
 
     // Victory progress: fraction of milestones completed across all victory types
-    val allMilestones = ruleset.victories.values.flatMap { it.milestones }
+    val allMilestones = ruleset.victories.values.flatMap { it.milestoneObjects }
     val victoryProgress: Float = if (allMilestones.isEmpty()) 0f else
         allMilestones.count { it.hasBeenCompletedBy(civ) }.toFloat() / allMilestones.size
 
@@ -450,7 +451,7 @@ private fun encodeCity(
         tile.position.y,                                //  3 y
         if (visible) 1 else 0,                          //  4 visible
         city.health,                                    //  5 hp (city defence HP)
-        city.getMaxHealth(),                            //  6 max_hp
+        200 + city.cityConstructions.getBuiltBuildings().sumOf { it.cityHealth }, //  6 max_hp
         0,                                              //  7 movement
         0,                                              //  8 strength
         0,                                              //  9 ranged_strength
