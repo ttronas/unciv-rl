@@ -1,0 +1,74 @@
+name: RL Integration Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rl-integration-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build server JAR
+        run: ./gradlew server:dist
+
+      - name: Start RL server
+        working-directory: android/assets
+        run: |
+          java -jar ../../server/build/libs/UncivServer.jar --rl --no-auth --no-chat -p 8080 &
+          echo $! > /tmp/server.pid
+          echo "Server PID: $(cat /tmp/server.pid)"
+
+      - name: Wait for server to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/isalive > /dev/null; then
+              echo "Server is ready after $i attempts"
+              exit 0
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+          echo "Server did not become ready in time – dumping last lines of process output"
+          kill $(cat /tmp/server.pid) 2>/dev/null || true
+          exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install pettingzoo gymnasium numpy requests
+
+      - name: Run integration tests
+        env:
+          UNCIV_RL_URL: http://localhost:8080
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest rl_env/tests/ -v
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f /tmp/server.pid ]; then
+            kill $(cat /tmp/server.pid) 2>/dev/null || true
+          fi
