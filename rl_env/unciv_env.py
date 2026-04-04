@@ -111,6 +111,8 @@ class UncivEnv(AECEnv):
         # These will be set in reset() once the server creates a game
         self._game_id: str | None = None
         self._agent_civ_ids: list[str] = []
+        self._civ_to_player: dict[str, str] = {}
+        self._player_to_civ: dict[str, str] = {}
         self._spaces: UncivSpaces | None = None
 
         # PettingZoo required attributes
@@ -183,8 +185,12 @@ class UncivEnv(AECEnv):
         self._game_id = response["gameId"]
         self._agent_civ_ids = response["agentCivIds"]
 
-        # Agent names are the civ ID strings
-        self.possible_agents = list(self._agent_civ_ids)
+        # Map server civ IDs to PettingZoo-style "player_0", "player_1", ...
+        self._civ_to_player = {civ: f"player_{i}" for i, civ in enumerate(self._agent_civ_ids)}
+        self._player_to_civ = {v: k for k, v in self._civ_to_player.items()}
+
+        # Agent names are "player_0", "player_1", ... as recommended by PettingZoo
+        self.possible_agents = [f"player_{i}" for i in range(len(self._agent_civ_ids))]
         self.agents = list(self.possible_agents)
 
         # Build spaces once we know the catalogue sizes
@@ -207,7 +213,7 @@ class UncivEnv(AECEnv):
         self.infos = {a: {} for a in self.agents}
 
         self._agent_selector = AgentSelector(self.agents)
-        self.agent_selection = response["currentAgent"]
+        self.agent_selection = self._civ_to_player[response["currentAgent"]]
 
         # Fetch initial observations and masks for all agents
         obs_json = response["observation"]
@@ -283,8 +289,11 @@ class UncivEnv(AECEnv):
             # Advance agent selection (the server already moved to next agent after END_TURN)
             if wire_action.get("macro") == MACRO_END_TURN:
                 state_json = self._client.get_state(self._game_id)
-                next_agent = state_json.get("agentCivId", current_agent)
-                self.agent_selection = next_agent
+                next_civ = state_json.get("agentCivId")
+                if next_civ and next_civ in self._civ_to_player:
+                    self.agent_selection = self._civ_to_player[next_civ]
+                else:
+                    self.agent_selection = current_agent
             # Non-turn-ending actions keep the same agent active
 
         # Update cumulative rewards
