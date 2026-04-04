@@ -192,3 +192,9 @@ detekt/reports.html
 /buildSrc/.kotlin/errors/*
 /buildSrc/.kotlin/sessions/*
 /.claude/
+
+## Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
