@@ -5,10 +5,13 @@ import com.unciv.logic.battle.Battle
 import com.unciv.logic.battle.MapUnitCombatant
 import com.unciv.logic.battle.TargetHelper
 import com.unciv.logic.city.City
+import com.unciv.logic.city.managers.CityFounder
 import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.civilization.PlayerType
 import com.unciv.logic.civilization.diplomacy.DeclareWarReason
 import com.unciv.logic.civilization.diplomacy.WarType
 import com.unciv.logic.map.mapunit.MapUnit
+import com.unciv.models.ruleset.unique.UniqueType
 import kotlinx.serialization.Serializable
 
 // ---------------------------------------------------------------------------
@@ -17,13 +20,13 @@ import kotlinx.serialization.Serializable
 
 object MacroAction {
     const val END_TURN = 0
-    /** Move unit to a tile: unitTarget + tileTarget */
+    /** Move unit to tile: unitTarget + tileTarget */
     const val UNIT_MOVE = 1
-    /** Attack a tile: unitTarget + tileTarget */
+    /** Attack tile with unit: unitTarget + tileTarget */
     const val UNIT_ATTACK = 2
     /** Non-move unit ability: unitTarget + unitSubaction */
     const val UNIT_ABILITY = 3
-    /** City management: cityTarget + citySubaction + productionTarget / tileTarget */
+    /** City management: cityTarget + citySubaction + productionTarget/tileTarget */
     const val CITY_ACTION = 4
     /** Research a technology: techTarget */
     const val TECH_RESEARCH = 5
@@ -31,9 +34,9 @@ object MacroAction {
     const val POLICY_ADOPT = 6
     /** Diplomatic action: diplomacyTarget + diplomacySubaction */
     const val DIPLOMACY = 7
-    /** Build improvement: unitTarget (worker) + tileTarget + improvementTarget */
+    /** Build tile improvement: unitTarget (worker) + tileTarget + improvementTarget */
     const val WORKER_BUILD = 8
-    /** Found city at settler's current tile: unitTarget */
+    /** Settler founds city at current location: unitTarget */
     const val FOUNDER_SETTLE = 9
 }
 
@@ -69,24 +72,24 @@ object DiplomacySubAction {
 }
 
 // ---------------------------------------------------------------------------
-// Action DTO
+// Action DTO (12 semantic fields)
 // ---------------------------------------------------------------------------
 
 /**
  * Semantic 12-field action submitted to POST /rl/action/{gameId}.
  *
- * | macro            | relevant fields                                         |
- * |------------------|---------------------------------------------------------|
- * | 0 END_TURN       | —                                                       |
- * | 1 UNIT_MOVE      | unitTarget, tileTarget                                  |
- * | 2 UNIT_ATTACK    | unitTarget, tileTarget                                  |
- * | 3 UNIT_ABILITY   | unitTarget, unitSubaction                               |
- * | 4 CITY_ACTION    | cityTarget, citySubaction, productionTarget / tileTarget|
- * | 5 TECH_RESEARCH  | techTarget                                              |
- * | 6 POLICY_ADOPT   | policyTarget                                            |
- * | 7 DIPLOMACY      | diplomacyTarget, diplomacySubaction                     |
- * | 8 WORKER_BUILD   | unitTarget (worker), tileTarget, improvementTarget      |
- * | 9 FOUNDER_SETTLE | unitTarget (settler)                                    |
+ * | macro            | relevant fields                                           |
+ * |------------------|-----------------------------------------------------------|
+ * | 0 END_TURN       | —                                                         |
+ * | 1 UNIT_MOVE      | unitTarget, tileTarget                                    |
+ * | 2 UNIT_ATTACK    | unitTarget, tileTarget                                    |
+ * | 3 UNIT_ABILITY   | unitTarget, unitSubaction                                 |
+ * | 4 CITY_ACTION    | cityTarget, citySubaction, productionTarget / tileTarget  |
+ * | 5 TECH_RESEARCH  | techTarget                                                |
+ * | 6 POLICY_ADOPT   | policyTarget                                              |
+ * | 7 DIPLOMACY      | diplomacyTarget, diplomacySubaction                       |
+ * | 8 WORKER_BUILD   | unitTarget (worker), tileTarget, improvementTarget        |
+ * | 9 FOUNDER_SETTLE | unitTarget (settler)                                      |
  */
 @Serializable
 data class RLAction(
@@ -108,90 +111,78 @@ data class RLAction(
 data class ActionResult(
     val success: Boolean,
     val message: String = "",
-    /** Delta in total score since the last step for the acting agent. */
     val reward: Float = 0f
 )
 
 // ---------------------------------------------------------------------------
-// Executor
+// Entity snapshot
 // ---------------------------------------------------------------------------
 
 /**
- * Routes an [RLAction] to Unciv game-logic.
- * Returns [ActionResult]; the caller handles turn advancement for END_TURN.
+ * Lightweight snapshot mapping entity-list index → game object.
+ * Units appear before cities, matching the observation builder order.
+ */
+data class EntitySnapshot(
+    /** 0=padding, 1=city, 2=unit */
+    val entityType: Int,
+    val unit: MapUnit?,
+    val city: City?
+)
+
+/** Build entity snapshots in the same order as the observation entity list. */
+fun buildEntitySnapshot(gameInfo: GameInfo): List<EntitySnapshot> {
+    val result = mutableListOf<EntitySnapshot>()
+    val padding = EntitySnapshot(0, null, null)
+
+    for (tile in gameInfo.tileMap.values) {
+        for (unit in tile.getUnits()) {
+            result += EntitySnapshot(2, unit, null)
+        }
+    }
+    for (gameCiv in gameInfo.civilizations) {
+        if (gameCiv.isDefeated()) continue
+        for (city in gameCiv.cities) {
+            result += EntitySnapshot(1, null, city)
+        }
+    }
+
+    while (result.size < MAX_ENTITIES) result += padding
+    return result.take(MAX_ENTITIES)
+}
+
+// ---------------------------------------------------------------------------
+// Main executor
+// ---------------------------------------------------------------------------
+
+/**
+ * Routes [action] to the appropriate game-logic handler.
+ * Returns [ActionResult]; turn advancement is handled by the caller.
  */
 fun executeAction(
     gameInfo: GameInfo,
     agentCivId: String,
     action: RLAction,
-    allAgents: List<String>,
-    entitySnapshot: List<EntitySnapshot>,
-    previousScore: Int
+    entitySnapshot: List<EntitySnapshot>
 ): ActionResult {
-
     val civ = gameInfo.getCivilization(agentCivId)
-    val ruleset = gameInfo.ruleset
 
-    val result = when (action.macro) {
-        MacroAction.END_TURN -> ActionResult(success = true, message = "end_turn")
-
-        MacroAction.UNIT_MOVE -> executeUnitMove(civ, action, entitySnapshot, gameInfo)
-
-        MacroAction.UNIT_ATTACK -> executeUnitAttack(civ, action, entitySnapshot, gameInfo)
-
-        MacroAction.UNIT_ABILITY -> executeUnitAbility(civ, action, entitySnapshot, ruleset)
-
-        MacroAction.CITY_ACTION -> executeCityAction(civ, action, entitySnapshot, gameInfo, ruleset)
-
-        MacroAction.TECH_RESEARCH -> {
-            val techList = ruleset.technologies.keys.sorted()
-            if (action.techTarget !in techList.indices)
-                return ActionResult(false, "techTarget ${action.techTarget} out of range")
-            val techName = techList[action.techTarget]
-            if (civ.tech.isResearched(techName))
-                return ActionResult(false, "Tech $techName already researched")
-            civ.tech.techsToResearch.remove(techName)
-            civ.tech.techsToResearch.add(0, techName)
-            ActionResult(true, "Researching $techName")
+    return try {
+        when (action.macro) {
+            MacroAction.END_TURN -> ActionResult(success = true, message = "end_turn")
+            MacroAction.UNIT_MOVE -> executeUnitMove(civ, gameInfo, action, entitySnapshot)
+            MacroAction.UNIT_ATTACK -> executeUnitAttack(civ, gameInfo, action, entitySnapshot)
+            MacroAction.UNIT_ABILITY -> executeUnitAbility(civ, action, entitySnapshot)
+            MacroAction.CITY_ACTION -> executeCityAction(civ, gameInfo, action, entitySnapshot)
+            MacroAction.TECH_RESEARCH -> executeTechResearch(civ, gameInfo, action)
+            MacroAction.POLICY_ADOPT -> executePolicyAdopt(civ, gameInfo, action)
+            MacroAction.DIPLOMACY -> executeDiplomacy(civ, gameInfo, action)
+            MacroAction.WORKER_BUILD -> executeWorkerBuild(civ, gameInfo, action, entitySnapshot)
+            MacroAction.FOUNDER_SETTLE -> executeFounderSettle(civ, gameInfo, action, entitySnapshot)
+            else -> ActionResult(false, "Unknown macro action: ${action.macro}")
         }
-
-        MacroAction.POLICY_ADOPT -> {
-            val policyList = ruleset.policies.keys.sorted()
-            if (action.policyTarget !in policyList.indices)
-                return ActionResult(false, "policyTarget ${action.policyTarget} out of range")
-            val policyName = policyList[action.policyTarget]
-            val policy = ruleset.policies[policyName]
-                ?: return ActionResult(false, "Policy $policyName not found")
-            if (!civ.policies.isAdoptable(policy))
-                return ActionResult(false, "Policy $policyName not adoptable")
-            civ.policies.adopt(policy)
-            ActionResult(true, "Adopted $policyName")
-        }
-
-        MacroAction.DIPLOMACY -> executeDiplomacy(civ, action, allAgents, gameInfo)
-
-        MacroAction.WORKER_BUILD -> executeWorkerBuild(civ, action, entitySnapshot, gameInfo, ruleset)
-
-        MacroAction.FOUNDER_SETTLE -> {
-            val unit = entitySnapshot.getOrNull(action.unitTarget)?.let {
-                findUnit(civ, it)
-            } ?: return ActionResult(false, "No settler unit at index ${action.unitTarget}")
-            if (!unit.baseUnit.hasUnique("Founds a new city")) // settler check
-                return ActionResult(false, "Unit at ${action.unitTarget} cannot found a city")
-            try {
-                unit.foundCity()
-                ActionResult(true, "City founded")
-            } catch (e: Exception) {
-                ActionResult(false, "Settle failed: ${e.message}")
-            }
-        }
-
-        else -> ActionResult(false, "Unknown macro action: ${action.macro}")
+    } catch (e: Exception) {
+        ActionResult(false, e.message ?: "Unknown error")
     }
-
-    val newScore = civ.calculateTotalScore().toInt()
-    val reward = (newScore - previousScore).toFloat()
-    return result.copy(reward = reward)
 }
 
 // ---------------------------------------------------------------------------
@@ -200,52 +191,48 @@ fun executeAction(
 
 private fun executeUnitMove(
     civ: Civilization,
+    gameInfo: GameInfo,
     action: RLAction,
-    entitySnapshot: List<EntitySnapshot>,
-    gameInfo: GameInfo
+    entitySnapshot: List<EntitySnapshot>
 ): ActionResult {
-    val unit = entitySnapshot.getOrNull(action.unitTarget)?.let { findUnit(civ, it) }
-        ?: return ActionResult(false, "No unit at entity index ${action.unitTarget}")
-    val tiles = gameInfo.tileMap.values.sortedBy { it.position.toString() }
-    val tile = tiles.getOrNull(action.tileTarget)
-        ?: return ActionResult(false, "tileTarget ${action.tileTarget} out of range")
-    return try {
-        unit.movement.moveToTile(tile)
-        ActionResult(true, "Unit moved to (${tile.position.x},${tile.position.y})")
-    } catch (e: Exception) {
-        ActionResult(false, "Move failed: ${e.message}")
-    }
+    val unit = resolveUnit(civ, entitySnapshot, action.unitTarget)
+        ?: return ActionResult(false, "No own unit at entity index ${action.unitTarget}")
+    val destTile = gameInfo.tileMap.values.getOrNull(action.tileTarget)
+        ?: return ActionResult(false, "Tile index ${action.tileTarget} out of range")
+    if (!unit.movement.canReachInCurrentTurn(destTile))
+        return ActionResult(false, "Unit cannot reach tile in current turn")
+    unit.movement.moveToTile(destTile)
+    return ActionResult(true, "Unit moved to (${destTile.position.x},${destTile.position.y})")
 }
 
 private fun executeUnitAttack(
     civ: Civilization,
+    gameInfo: GameInfo,
     action: RLAction,
-    entitySnapshot: List<EntitySnapshot>,
-    gameInfo: GameInfo
+    entitySnapshot: List<EntitySnapshot>
 ): ActionResult {
-    val unit = entitySnapshot.getOrNull(action.unitTarget)?.let { findUnit(civ, it) }
-        ?: return ActionResult(false, "No unit at entity index ${action.unitTarget}")
-    val tiles = gameInfo.tileMap.values.sortedBy { it.position.toString() }
-    val tile = tiles.getOrNull(action.tileTarget)
-        ?: return ActionResult(false, "tileTarget ${action.tileTarget} out of range")
-    val attackable = TargetHelper.getAttackableEnemies(unit, unit.movement.getDistanceToTiles())
-        .firstOrNull { it.tileToAttack == tile }
-        ?: return ActionResult(false, "Tile not attackable")
-    Battle.attack(MapUnitCombatant(unit), attackable)
-    return ActionResult(true, "Attacked tile (${tile.position.x},${tile.position.y})")
+    val unit = resolveUnit(civ, entitySnapshot, action.unitTarget)
+        ?: return ActionResult(false, "No own unit at entity index ${action.unitTarget}")
+    val targetTile = gameInfo.tileMap.values.getOrNull(action.tileTarget)
+        ?: return ActionResult(false, "Tile index ${action.tileTarget} out of range")
+    val distToTiles = unit.movement.getDistanceToTiles()
+    val attackable = TargetHelper.getAttackableEnemies(unit, distToTiles)
+        .firstOrNull { it.tileToAttack == targetTile }
+        ?: return ActionResult(false, "Tile is not attackable")
+    Battle.moveAndAttack(MapUnitCombatant(unit), attackable)
+    return ActionResult(true, "Attacked tile (${targetTile.position.x},${targetTile.position.y})")
 }
 
 private fun executeUnitAbility(
     civ: Civilization,
     action: RLAction,
-    entitySnapshot: List<EntitySnapshot>,
-    ruleset: com.unciv.models.ruleset.Ruleset
+    entitySnapshot: List<EntitySnapshot>
 ): ActionResult {
-    val unit = entitySnapshot.getOrNull(action.unitTarget)?.let { findUnit(civ, it) }
-        ?: return ActionResult(false, "No unit at entity index ${action.unitTarget}")
+    val unit = resolveUnit(civ, entitySnapshot, action.unitTarget)
+        ?: return ActionResult(false, "No own unit at entity index ${action.unitTarget}")
     return when (action.unitSubaction) {
         UnitSubAction.FORTIFY -> {
-            unit.fortify()
+            unit.fortifyIfCan()
             ActionResult(true, "Unit fortified")
         }
         UnitSubAction.HEAL -> {
@@ -258,25 +245,29 @@ private fun executeUnitAbility(
             ActionResult(true, "Unit skipped")
         }
         UnitSubAction.PROMOTE -> {
-            val promotion = unit.promotions.getAvailablePromotions().firstOrNull()
-                ?: return ActionResult(false, "No promotions available")
-            unit.promotions.addPromotion(promotion.name)
-            ActionResult(true, "Promoted: ${promotion.name}")
+            val available = unit.promotions.getAvailablePromotions().toList()
+            if (available.isEmpty()) return ActionResult(false, "No promotions available")
+            if (!unit.promotions.canBePromoted()) return ActionResult(false, "Unit cannot be promoted")
+            unit.promotions.addPromotion(available[0].name)
+            ActionResult(true, "Promoted: ${available[0].name}")
         }
         UnitSubAction.PILLAGE -> {
-            if (!unit.canPillage())
-                return ActionResult(false, "Cannot pillage here")
-            unit.pillageCurrentTile()
+            val tile = unit.getTile()
+            if (!tile.canPillageTile()) return ActionResult(false, "Cannot pillage this tile")
+            tile.setPillaged()
+            unit.currentMovement = 0f
             ActionResult(true, "Tile pillaged")
         }
         UnitSubAction.DISBAND -> {
-            unit.destroy()
+            unit.disband()
             ActionResult(true, "Unit disbanded")
         }
         UnitSubAction.FOUND_CITY -> {
-            if (!unit.baseUnit.hasUnique("Founds a new city"))
-                return ActionResult(false, "Unit cannot found a city")
-            unit.foundCity()
+            if (!unit.baseUnit.isCityFounder())
+                return ActionResult(false, "Unit is not a settler")
+            val location = unit.getTile().position
+            CityFounder().foundCity(civ, location, unit)
+            unit.destroy()
             ActionResult(true, "City founded")
         }
         else -> ActionResult(false, "Unknown unit subaction: ${action.unitSubaction}")
@@ -285,53 +276,63 @@ private fun executeUnitAbility(
 
 private fun executeCityAction(
     civ: Civilization,
-    action: RLAction,
-    entitySnapshot: List<EntitySnapshot>,
     gameInfo: GameInfo,
-    ruleset: com.unciv.models.ruleset.Ruleset
+    action: RLAction,
+    entitySnapshot: List<EntitySnapshot>
 ): ActionResult {
-    val city = entitySnapshot.getOrNull(action.cityTarget)?.let { snap ->
-        civ.cities.firstOrNull { it.location == snap.position }
-    } ?: return ActionResult(false, "No city at entity index ${action.cityTarget}")
+    val snap = entitySnapshot.getOrNull(action.cityTarget)
+        ?: return ActionResult(false, "Entity index ${action.cityTarget} out of range")
+    val city = snap.city ?: return ActionResult(false, "Entity ${action.cityTarget} is not a city")
+    if (city.civ != civ) return ActionResult(false, "City does not belong to agent")
 
+    val ruleset = gameInfo.ruleset
     val productionList = (ruleset.buildings.keys + ruleset.units.keys).distinct().sorted()
 
     return when (action.citySubaction) {
         CitySubAction.SET_PRODUCTION -> {
-            if (action.productionTarget !in productionList.indices)
-                return ActionResult(false, "productionTarget out of range")
-            val itemName = productionList[action.productionTarget]
-            if (!city.cityConstructions.isQueueable(itemName))
-                return ActionResult(false, "$itemName not buildable in this city")
+            val itemName = productionList.getOrNull(action.productionTarget)
+                ?: return ActionResult(false, "productionTarget ${action.productionTarget} out of range")
+            val construction = ruleset.buildings[itemName] ?: ruleset.units[itemName]
+                ?: return ActionResult(false, "'$itemName' not found in ruleset")
+            if (!construction.isBuildable(city.cityConstructions))
+                return ActionResult(false, "'$itemName' not buildable in this city")
+            city.cityConstructions.constructionQueue.clear()
             city.cityConstructions.addToQueue(itemName)
             ActionResult(true, "Production set to $itemName")
         }
         CitySubAction.BUY_PRODUCTION -> {
-            if (action.productionTarget !in productionList.indices)
-                return ActionResult(false, "productionTarget out of range")
-            val itemName = productionList[action.productionTarget]
-            val stat = com.unciv.models.stats.Stat.Gold
-            if (!city.cityConstructions.isQueueable(itemName))
-                return ActionResult(false, "$itemName not buyable")
-            val cost = city.cityConstructions.getRemainingWork(itemName)
+            val itemName = productionList.getOrNull(action.productionTarget)
+                ?: return ActionResult(false, "productionTarget ${action.productionTarget} out of range")
+            val purchasable = (ruleset.buildings[itemName] ?: ruleset.units[itemName])
+                as? com.unciv.models.ruleset.INonPerpetualConstruction
+                ?: return ActionResult(false, "'$itemName' not purchasable")
+            if (!purchasable.canBePurchasedWithStat(city, com.unciv.models.stats.Stat.Gold))
+                return ActionResult(false, "Cannot purchase $itemName with gold")
+            val cost = purchasable.getStatBuyCost(city, com.unciv.models.stats.Stat.Gold)
+                ?: return ActionResult(false, "No gold cost for $itemName")
             if (civ.gold < cost)
-                return ActionResult(false, "Not enough gold (need $cost, have ${civ.gold})")
-            city.cityConstructions.purchaseConstruction(itemName, 0, true)
-            ActionResult(true, "Bought $itemName")
+                return ActionResult(false, "Insufficient gold ($cost required, ${civ.gold} available)")
+            city.cityConstructions.purchaseConstruction(itemName, 0, false)
+            ActionResult(true, "Purchased $itemName for $cost gold")
         }
         CitySubAction.SELL_BUILDING -> {
-            if (action.productionTarget !in productionList.indices)
-                return ActionResult(false, "productionTarget out of range")
-            val buildingName = productionList[action.productionTarget]
-            if (buildingName !in city.cityConstructions.getBuiltBuildings().map { it.name })
-                return ActionResult(false, "$buildingName not built in this city")
-            city.cityConstructions.sellBuilding(buildingName)
-            ActionResult(true, "Sold $buildingName")
+            val itemName = productionList.getOrNull(action.productionTarget)
+                ?: return ActionResult(false, "productionTarget ${action.productionTarget} out of range")
+            val building = ruleset.buildings[itemName]
+                ?: return ActionResult(false, "'$itemName' is not a building")
+            if (!city.cityConstructions.isBuilt(itemName))
+                return ActionResult(false, "$itemName not built in this city")
+            if (city.hasSoldBuildingThisTurn)
+                return ActionResult(false, "Already sold a building this turn")
+            city.cityConstructions.removeBuilding(itemName)
+            val sellGold = (building.cost / 10).coerceAtLeast(1)
+            civ.addGold(sellGold)
+            city.hasSoldBuildingThisTurn = true
+            ActionResult(true, "Sold $itemName for $sellGold gold")
         }
         CitySubAction.BUY_TILE -> {
-            val tiles = gameInfo.tileMap.values.sortedBy { it.position.toString() }
-            val tile = tiles.getOrNull(action.tileTarget)
-                ?: return ActionResult(false, "tileTarget out of range")
+            val tile = gameInfo.tileMap.values.getOrNull(action.tileTarget)
+                ?: return ActionResult(false, "tileTarget ${action.tileTarget} out of range")
             if (!city.expansion.canBuyTile(tile))
                 return ActionResult(false, "Cannot buy tile at (${tile.position.x},${tile.position.y})")
             city.expansion.buyTile(tile)
@@ -341,86 +342,150 @@ private fun executeCityAction(
     }
 }
 
+private fun executeTechResearch(
+    civ: Civilization,
+    gameInfo: GameInfo,
+    action: RLAction
+): ActionResult {
+    val techList = gameInfo.ruleset.technologies.keys.sorted()
+    val techName = techList.getOrNull(action.techTarget)
+        ?: return ActionResult(false, "techTarget ${action.techTarget} out of range")
+    if (!civ.tech.canBeResearched(techName))
+        return ActionResult(false, "'$techName' cannot be researched right now")
+    civ.tech.techsToResearch.remove(techName)
+    civ.tech.techsToResearch.add(0, techName)
+    return ActionResult(true, "Now researching $techName")
+}
+
+private fun executePolicyAdopt(
+    civ: Civilization,
+    gameInfo: GameInfo,
+    action: RLAction
+): ActionResult {
+    val policyList = gameInfo.ruleset.policies.keys.sorted()
+    val policyName = policyList.getOrNull(action.policyTarget)
+        ?: return ActionResult(false, "policyTarget ${action.policyTarget} out of range")
+    val policy = gameInfo.ruleset.policies[policyName]
+        ?: return ActionResult(false, "Policy '$policyName' not in ruleset")
+    if (!civ.policies.isAdoptable(policy))
+        return ActionResult(false, "'$policyName' is not adoptable right now")
+    if (!civ.policies.canAdoptPolicy())
+        return ActionResult(false, "Cannot adopt policy: no free policies or insufficient culture")
+    civ.policies.adopt(policy)
+    return ActionResult(true, "Adopted policy $policyName")
+}
+
 private fun executeDiplomacy(
     civ: Civilization,
-    action: RLAction,
-    allAgents: List<String>,
-    gameInfo: GameInfo
+    gameInfo: GameInfo,
+    action: RLAction
 ): ActionResult {
-    if (action.diplomacyTarget !in allAgents.indices)
-        return ActionResult(false, "diplomacyTarget ${action.diplomacyTarget} out of range")
-    val targetCivId = allAgents[action.diplomacyTarget]
+    // Derive agent list from all human players (same order as observation)
+    val allAgents = gameInfo.civilizations
+        .filter { it.playerType == PlayerType.Human && !it.isSpectator() }
+        .map { it.civID }
+    val targetCivId = allAgents.getOrNull(action.diplomacyTarget)
+        ?: gameInfo.civilizations.filter { it.isMajorCiv() }.getOrNull(action.diplomacyTarget)?.civID
+        ?: return ActionResult(false, "diplomacyTarget ${action.diplomacyTarget} out of range")
     if (targetCivId == civ.civID)
         return ActionResult(false, "Cannot target self in diplomacy")
     val targetCiv = gameInfo.getCivilizationOrNull(targetCivId)
-        ?: return ActionResult(false, "Target civ $targetCivId not found")
-    val dm = civ.getDiplomacyManager(targetCiv)
-        ?: return ActionResult(false, "No diplomacy manager for $targetCivId")
+        ?: return ActionResult(false, "Target civ '$targetCivId' not found")
+    val dm = civ.getDiplomacyManagerOrMeet(targetCiv)
 
     return when (action.diplomacySubaction) {
         DiplomacySubAction.DECLARE_WAR -> {
             if (dm.diplomaticStatus == com.unciv.logic.civilization.diplomacy.DiplomaticStatus.War)
-                return ActionResult(false, "Already at war with $targetCivId")
-            civ.getDiplomacyManager(targetCiv)!!.declareWar(DeclareWarReason(WarType.DirectWar, targetCiv))
-            ActionResult(true, "Declared war on $targetCivId")
+                return ActionResult(false, "Already at war with ${targetCiv.civName}")
+            dm.declareWar(DeclareWarReason(WarType.DirectWar))
+            ActionResult(true, "Declared war on ${targetCiv.civName}")
         }
         DiplomacySubAction.OFFER_PEACE -> {
             if (dm.diplomaticStatus != com.unciv.logic.civilization.diplomacy.DiplomaticStatus.War)
-                return ActionResult(false, "Not at war with $targetCivId")
-            // Simple white peace via negotiation — signal intent; full trade UI not available headless
-            ActionResult(false, "Peace negotiations require trade UI (not implemented headless)")
+                return ActionResult(false, "Not at war with ${targetCiv.civName}")
+            dm.makePeace()
+            ActionResult(true, "Made peace with ${targetCiv.civName}")
         }
         DiplomacySubAction.OPEN_BORDERS -> {
-            dm.signOpenBorders()
-            ActionResult(true, "Signed open borders with $targetCivId")
+            if (dm.diplomaticStatus == com.unciv.logic.civilization.diplomacy.DiplomaticStatus.War)
+                return ActionResult(false, "Cannot open borders while at war")
+            val trade = com.unciv.logic.trade.Trade()
+            val offer = com.unciv.logic.trade.TradeOffer(
+                com.unciv.Constants.openBorders,
+                com.unciv.logic.trade.TradeOfferType.Agreement, duration = 30)
+            trade.ourOffers.add(offer); trade.theirOffers.add(offer)
+            dm.trades.add(trade); dm.otherCivDiplomacy().trades.add(trade)
+            dm.updateHasOpenBorders(); dm.otherCivDiplomacy().updateHasOpenBorders()
+            ActionResult(true, "Opened borders with ${targetCiv.civName}")
         }
         DiplomacySubAction.FRIENDSHIP -> {
             dm.signDeclarationOfFriendship()
-            ActionResult(true, "Signed declaration of friendship with $targetCivId")
+            ActionResult(true, "Signed declaration of friendship with ${targetCiv.civName}")
         }
         DiplomacySubAction.DENOUNCE -> {
             dm.denounce()
-            ActionResult(true, "Denounced $targetCivId")
+            ActionResult(true, "Denounced ${targetCiv.civName}")
         }
-        DiplomacySubAction.RESEARCH_AGREEMENT -> {
-            ActionResult(false, "Research agreement not yet implemented")
-        }
-        DiplomacySubAction.DEFENSIVE_PACT -> {
-            ActionResult(false, "Defensive pact not yet implemented")
-        }
-        else -> ActionResult(false, "Unknown diplomacy subaction: ${action.diplomacySubaction}")
+        else -> ActionResult(false, "Diplomacy subaction ${action.diplomacySubaction} not implemented")
     }
 }
 
 private fun executeWorkerBuild(
     civ: Civilization,
-    action: RLAction,
-    entitySnapshot: List<EntitySnapshot>,
     gameInfo: GameInfo,
-    ruleset: com.unciv.models.ruleset.Ruleset
+    action: RLAction,
+    entitySnapshot: List<EntitySnapshot>
 ): ActionResult {
-    val worker = entitySnapshot.getOrNull(action.unitTarget)?.let { findUnit(civ, it) }
-        ?: return ActionResult(false, "No worker at entity index ${action.unitTarget}")
-    val tiles = gameInfo.tileMap.values.sortedBy { it.position.toString() }
-    val tile = tiles.getOrNull(action.tileTarget)
+    val worker = resolveUnit(civ, entitySnapshot, action.unitTarget)
+        ?: return ActionResult(false, "No own unit at entity index ${action.unitTarget}")
+    if (!worker.hasUnique(UniqueType.BuildImprovements))
+        return ActionResult(false, "Unit cannot build improvements")
+    val targetTile = gameInfo.tileMap.values.getOrNull(action.tileTarget)
         ?: return ActionResult(false, "tileTarget ${action.tileTarget} out of range")
-    val improvList = ruleset.tileImprovements.keys.sorted()
-    if (action.improvementTarget !in improvList.indices)
-        return ActionResult(false, "improvementTarget out of range")
-    val improvName = improvList[action.improvementTarget]
-    val improvement = ruleset.tileImprovements[improvName]
-        ?: return ActionResult(false, "Improvement $improvName not found")
-    if (!tile.canBuildImprovement(improvement, civ))
-        return ActionResult(false, "Cannot build $improvName on this tile")
-    tile.startWorkingOnImprovement(improvement, civ, worker)
-    return ActionResult(true, "Worker building $improvName")
+    val improvNames = gameInfo.ruleset.tileImprovements.keys.sorted()
+    val improvName = improvNames.getOrNull(action.improvementTarget)
+        ?: return ActionResult(false, "improvementTarget ${action.improvementTarget} out of range")
+    val improvement = gameInfo.ruleset.tileImprovements[improvName]
+        ?: return ActionResult(false, "Improvement '$improvName' not in ruleset")
+    val gameContext = com.unciv.models.ruleset.unique.GameContext(unit = worker)
+    if (!targetTile.improvementFunctions.canBuildImprovement(improvement, gameContext))
+        return ActionResult(false, "Cannot build '$improvName' on this tile")
+    targetTile.queueImprovement(improvement, civ, worker)
+    return ActionResult(true, "Worker queued building $improvName")
+}
+
+private fun executeFounderSettle(
+    civ: Civilization,
+    gameInfo: GameInfo,
+    action: RLAction,
+    entitySnapshot: List<EntitySnapshot>
+): ActionResult {
+    val settler = resolveUnit(civ, entitySnapshot, action.unitTarget)
+        ?: return ActionResult(false, "No own unit at entity index ${action.unitTarget}")
+    if (!settler.baseUnit.isCityFounder())
+        return ActionResult(false, "Unit is not a settler")
+    val location = settler.getTile().position
+    CityFounder().foundCity(civ, location, settler)
+    settler.destroy()
+    return ActionResult(true, "City founded at $location")
 }
 
 // ---------------------------------------------------------------------------
-// Utility
+// Helpers
 // ---------------------------------------------------------------------------
 
-private fun findUnit(civ: Civilization, snap: EntitySnapshot): MapUnit? =
-    civ.units.getCivUnits().firstOrNull { u ->
-        u.getTile().position == snap.position && snap.entityType == 2
-    }
+private fun resolveUnit(
+    civ: Civilization,
+    entitySnapshot: List<EntitySnapshot>,
+    index: Int
+): MapUnit? {
+    val snap = entitySnapshot.getOrNull(index) ?: return null
+    if (snap.entityType != 2) return null
+    val unit = snap.unit ?: return null
+    if (unit.civ != civ) return null
+    return unit
+}
+
+/** Extension: get tile by zeroBasedIndex. */
+private fun Iterable<com.unciv.logic.map.tile.Tile>.getOrNull(index: Int): com.unciv.logic.map.tile.Tile? =
+    this.firstOrNull { it.zeroBasedIndex == index }

@@ -495,10 +495,8 @@ private class UncivServerRunner : CliktCommand() {
 
                             val result = withContext(Dispatchers.Default) {
                                 val snapshot = buildEntitySnapshot(gameInfo)
-                                val previousScore = state.previousScores[gameInfo.currentPlayer] ?: 0
                                 val actionResult = executeAction(
-                                    gameInfo, gameInfo.currentPlayer, action,
-                                    state.agentCivIds, snapshot, previousScore)
+                                    gameInfo, gameInfo.currentPlayer, action, snapshot)
 
                                 if (actionResult.success && action.macro == MacroAction.END_TURN) {
                                     val prevScores = state.previousScores

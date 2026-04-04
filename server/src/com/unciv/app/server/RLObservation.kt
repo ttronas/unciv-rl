@@ -8,6 +8,7 @@ import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.tile.RoadStatus
 import com.unciv.logic.map.tile.Tile
 import com.unciv.models.ruleset.tile.TerrainType
+import com.unciv.models.ruleset.unique.UniqueType
 import com.unciv.ui.screens.victoryscreen.RankingType
 import kotlinx.serialization.Serializable
 import kotlin.math.roundToInt
@@ -403,8 +404,8 @@ private fun encodeUnit(
     }
     val isCivilian = if (unit.baseUnit.isCivilian()) 1 else 0
     val isRanged = if (unit.baseUnit.rangedStrength > 0) 1 else 0
-    val canFoundCity = if (unit.baseUnit.hasUnique("Founds a new city")) 1 else 0
-    val canImprove = if (unit.baseUnit.hasUnique("Can build improvements on tiles")) 1 else 0
+    val canFoundCity = if (unit.baseUnit.isCityFounder()) 1 else 0
+    val canImprove = if (unit.hasUnique(UniqueType.BuildImprovements)) 1 else 0
     val unitClass = when {
         unit.baseUnit.isCivilian() -> 4
         unit.baseUnit.isAirUnit() -> 3
