@@ -194,6 +194,7 @@ class UncivEnv(AECEnv):
             num_techs=max(len(catalogues.get("techNames", [])), 1),
             num_policies=max(len(catalogues.get("policyNames", [])), 1),
             num_production_items=max(len(catalogues.get("productionItemNames", [])), 1),
+            num_improvements=max(len(catalogues.get("improvementNames", [])), 1),
         )
 
         self._obs_space_cache = {a: self._spaces.observation_space() for a in self.possible_agents}

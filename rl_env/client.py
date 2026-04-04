@@ -132,18 +132,25 @@ class UncivRLClient:
         """
         POST /rl/action/{gameId} – execute *action* for the current agent.
 
-        *action* must contain at least the key ``"macro"``; ``"target"``,
-        ``"subaction"``, ``"arg1"``, and ``"arg2"`` default to 0 on the server.
+        *action* must be a camelCase wire-format dict as returned by
+        :func:`rl_env.action_mapper.encode_action`.
 
         Returns an :class:`ActionResult` dict with keys ``success``,
         ``message``, and ``reward``.
         """
         payload = {
             "macro": int(action.get("macro", 0)),
-            "target": int(action.get("target", 0)),
-            "subaction": int(action.get("subaction", 0)),
-            "arg1": int(action.get("arg1", 0)),
-            "arg2": int(action.get("arg2", 0)),
+            "unitTarget": int(action.get("unitTarget", 0)),
+            "unitSubaction": int(action.get("unitSubaction", 0)),
+            "cityTarget": int(action.get("cityTarget", 0)),
+            "citySubaction": int(action.get("citySubaction", 0)),
+            "productionTarget": int(action.get("productionTarget", 0)),
+            "techTarget": int(action.get("techTarget", 0)),
+            "policyTarget": int(action.get("policyTarget", 0)),
+            "diplomacyTarget": int(action.get("diplomacyTarget", 0)),
+            "diplomacySubaction": int(action.get("diplomacySubaction", 0)),
+            "tileTarget": int(action.get("tileTarget", 0)),
+            "improvementTarget": int(action.get("improvementTarget", 0)),
         }
         return self._post(f"action/{game_id}", payload)
 

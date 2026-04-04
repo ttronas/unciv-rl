@@ -8,79 +8,45 @@ import com.unciv.models.ruleset.unique.UniqueType
 import kotlinx.serialization.Serializable
 
 /**
- * Per-level action masks returned by GET /rl/action_mask/{gameId}.
+ * Per-action-dimension masks returned by GET /rl/action_mask/{gameId}.
  *
- * The masks are intentionally hierarchical: [macroMask] tells the agent which macro
- * actions are available at all; the per-macro arrays then indicate which targets /
- * subactions / arguments are legal for each enabled macro.
- *
- * All mask arrays contain **true** for valid choices and **false** for illegal ones.
+ * Every mask array has **true** for valid choices and **false** for illegal ones.
+ * The 12 keys mirror the 12 keys in the Python action space exactly.
  */
 @Serializable
 data class RLActionMaskResponse(
     val gameId: String,
     val agentCivId: String,
-    /** Length = number of macro actions (currently 8). */
+    /** Which of the 10 macro actions are legal this turn. */
     val macroMask: List<Boolean>,
-    /**
-     * For macro 1 (UNIT_ACTION): which entity-list indices are units belonging
-     * to the current agent that can still act this turn.
-     * Length = MAX_ENTITIES.
-     */
+    /** Which entity indices are own moveable units (UNIT_MOVE / UNIT_ATTACK / UNIT_ABILITY). */
     val unitTargetMask: List<Boolean>,
-    /**
-     * For macro 1 (UNIT_ACTION): which sub-actions are legal for ANY of the
-     * moveable units.  If a sub-action is in this list it means at least one
-     * unit can perform it; the agent should still check the per-unit validity
-     * after selecting a target.
-     * Length = number of unit sub-actions (8).
-     */
+    /** Which unit sub-actions are available for at least one unit. */
     val unitSubactionMask: List<Boolean>,
-    /**
-     * For macro 2 (CITY_ACTION): which entity indices are cities belonging to
-     * the agent.  Length = MAX_ENTITIES.
-     */
+    /** Which entity indices are own cities (CITY_ACTION). */
     val cityTargetMask: List<Boolean>,
-    /**
-     * For macro 3 (TECH_ACTION): which tech indices are currently researchable.
-     * Length = number of techs in the ruleset (variable; clients should use the
-     * catalogues list to map indices).
-     */
+    /** Which city sub-actions are available for at least one city. */
+    val citySubactionMask: List<Boolean>,
+    /** Which production items are buildable in at least one city. */
+    val productionTargetMask: List<Boolean>,
+    /** Which tech indices are currently researchable (prereqs met, not yet researched). */
     val techTargetMask: List<Boolean>,
-    /**
-     * For macro 4 (DIPLOMACY_ACTION): which civ indices (in allAgents) are
-     * valid targets.  Length = number of agents.
-     */
-    val diplomacyTargetMask: List<Boolean>,
-    /**
-     * For macro 4 (DIPLOMACY_ACTION): which sub-actions are legally available
-     * against any of the valid targets.  Length = 3.
-     */
-    val diplomacySubactionMask: List<Boolean>,
-    /**
-     * For macro 5 (POLICY_ACTION): which policy indices are currently adoptable.
-     * Length = number of policies in the ruleset.
-     */
+    /** Which policy indices are currently adoptable. */
     val policyTargetMask: List<Boolean>,
-    /**
-     * For macro 6 (SETTLER_ACTION): which entity indices are settler units.
-     * Length = MAX_ENTITIES.
-     */
-    val settlerTargetMask: List<Boolean>,
-    /**
-     * For macro 2 (CITY_ACTION): which production items are buildable across
-     * at least one city.  Length = number of production items in catalogues.
-     */
-    val productionItemMask: List<Boolean>
+    /** Which agent indices (in allAgents) are valid diplomacy targets. */
+    val diplomacyTargetMask: List<Boolean>,
+    /** Which diplomacy sub-actions are available against at least one target. */
+    val diplomacySubactionMask: List<Boolean>,
+    /** Which tile indices are relevant (reachable / attackable / purchasable / buildable). */
+    val tileTargetMask: List<Boolean>,
+    /** Which improvement indices can be built by at least one worker. */
+    val improvementTargetMask: List<Boolean>
 )
 
 // ---------------------------------------------------------------------------
-// Mask builder
+// Builder
 // ---------------------------------------------------------------------------
 
-/**
- * Computes a complete [RLActionMaskResponse] for [agentCivId] in [gameInfo].
- */
 fun computeActionMask(
     gameInfo: GameInfo,
     agentCivId: String,
@@ -90,139 +56,169 @@ fun computeActionMask(
 
     val civ = gameInfo.getCivilization(agentCivId)
     val ruleset = gameInfo.ruleset
+    val sortedTiles = gameInfo.tileMap.values.sortedBy { it.position.toString() }
 
-    // ---- catalogues (same order as observations) --------------------------
+    // ---- catalogues -------------------------------------------------------
     val techList = ruleset.technologies.keys.sorted()
     val policyList = ruleset.policies.keys.sorted()
     val productionList = (ruleset.buildings.keys + ruleset.units.keys).distinct().sorted()
+    val improvList = ruleset.tileImprovements.keys.sorted()
 
-    // ---- unit masks -------------------------------------------------------
+    // ---- units this agent can act with ------------------------------------
+    val actionableUnits = civ.units.getCivUnits()
+        .filter { it.currentMovement > 0f || it.due }
+        .toList()
+    val workerUnits = actionableUnits.filter { it.baseUnit.hasUnique("Can build improvements on tiles") }
+    val settlerUnits = actionableUnits.filter { it.baseUnit.hasUnique("Founds a new city") }
+    val combatUnits = actionableUnits.filter { !it.baseUnit.isCivilian() }
+
+    // ---- unit target mask ------------------------------------------------
     val unitTargetMask = BooleanArray(MAX_ENTITIES) { false }
-    val unitSubactionSet = BooleanArray(8) { false }
+    for (snap in entitySnapshot) {
+        if (snap.entityType != 2) continue
+        val unit = civ.units.getCivUnits().firstOrNull { u ->
+            u.getTile().position == snap.position
+        } ?: continue
+        if (unit.currentMovement > 0f || unit.due)
+            unitTargetMask[entitySnapshot.indexOf(snap)] = true
+    }
 
-    for ((idx, snap) in entitySnapshot.withIndex()) {
-        if (snap.entityType != 2) continue       // not a unit
-        val unit = snap.unit ?: continue
-        if (unit.civ != civ) continue             // not ours
-        if (!unit.due || unit.currentMovement <= 0f) continue  // no actions left
-
-        unitTargetMask[idx] = true
-
-        // Subaction 0: MOVE – the unit has movement points
-        if (unit.currentMovement > 0f) unitSubactionSet[UnitSubAction.MOVE] = true
-
-        // Subaction 1: ATTACK – any attackable enemy nearby
-        val distToTiles = unit.movement.getDistanceToTiles()
-        val attackables = com.unciv.logic.battle.TargetHelper
-            .getAttackableEnemies(unit, distToTiles)
-        if (attackables.isNotEmpty()) unitSubactionSet[UnitSubAction.ATTACK] = true
-
-        // Subaction 2: FORTIFY
-        if (!unit.isFortified()) unitSubactionSet[UnitSubAction.FORTIFY] = true
-
-        // Subaction 3: SKIP always available while unit has due flag
-        unitSubactionSet[UnitSubAction.SKIP] = true
-
-        // Subaction 4: PROMOTE
-        if (unit.promotions.canBePromoted()) unitSubactionSet[UnitSubAction.PROMOTE] = true
-
-        // Subaction 5: PILLAGE
-        if (unit.getTile().canPillageTile()) unitSubactionSet[UnitSubAction.PILLAGE] = true
-
-        // Subaction 6: DISBAND always available if the unit exists
-        unitSubactionSet[UnitSubAction.DISBAND] = true
-
-        // Subaction 7: FOUND_CITY (settler)
-        if (unit.baseUnit.isCityFounder()) unitSubactionSet[UnitSubAction.FOUND_CITY] = true
+    // ---- unit subaction mask (any of the actionable units) ---------------
+    val unitSubactionMask = BooleanArray(7) { false }
+    if (actionableUnits.isNotEmpty()) {
+        unitSubactionMask[UnitSubAction.FORTIFY] = combatUnits.any { !it.isFortified() }
+        unitSubactionMask[UnitSubAction.HEAL] = actionableUnits.any { it.health < 100 }
+        unitSubactionMask[UnitSubAction.SKIP] = actionableUnits.isNotEmpty()
+        unitSubactionMask[UnitSubAction.PROMOTE] = actionableUnits.any {
+            it.promotions.getAvailablePromotions().any()
+        }
+        unitSubactionMask[UnitSubAction.PILLAGE] = combatUnits.any { it.canPillage() }
+        unitSubactionMask[UnitSubAction.DISBAND] = actionableUnits.isNotEmpty()
+        unitSubactionMask[UnitSubAction.FOUND_CITY] = settlerUnits.isNotEmpty()
     }
 
     // ---- city masks -------------------------------------------------------
     val cityTargetMask = BooleanArray(MAX_ENTITIES) { false }
-    for ((idx, snap) in entitySnapshot.withIndex()) {
+    for (snap in entitySnapshot) {
         if (snap.entityType != 1) continue
-        val city = snap.city ?: continue
-        if (city.civ != civ) continue
-        cityTargetMask[idx] = true
+        val city = civ.cities.firstOrNull { it.location == snap.position } ?: continue
+        cityTargetMask[entitySnapshot.indexOf(snap)] = true
     }
 
-    // ---- settler masks (cities can be founded on current tile) ------------
-    val settlerTargetMask = BooleanArray(MAX_ENTITIES) { false }
-    for ((idx, snap) in entitySnapshot.withIndex()) {
-        if (snap.entityType != 2) continue
-        val unit = snap.unit ?: continue
-        if (unit.civ != civ) continue
-        if (unit.baseUnit.isCityFounder() && unit.currentMovement > 0f)
-            settlerTargetMask[idx] = true
+    val citySubactionMask = BooleanArray(4) { false }
+    if (civ.cities.isNotEmpty()) {
+        citySubactionMask[CitySubAction.SET_PRODUCTION] = true
+        citySubactionMask[CitySubAction.BUY_PRODUCTION] = civ.gold > 0
+        citySubactionMask[CitySubAction.SELL_BUILDING] =
+            civ.cities.any { it.cityConstructions.getBuiltBuildings().any() }
+        citySubactionMask[CitySubAction.BUY_TILE] =
+            civ.cities.any { city -> gameInfo.tileMap.values.any { city.expansion.canBuyTile(it) } }
     }
 
-    // ---- tech mask --------------------------------------------------------
+    // ---- production items ------------------------------------------------
+    val productionTargetMask = BooleanArray(productionList.size) { false }
+    for ((idx, name) in productionList.withIndex()) {
+        if (civ.cities.any { it.cityConstructions.isQueueable(name) })
+            productionTargetMask[idx] = true
+    }
+
+    // ---- tech mask -------------------------------------------------------
     val techTargetMask = BooleanArray(techList.size) { false }
-    for ((idx, techName) in techList.withIndex()) {
-        if (civ.tech.canBeResearched(techName)) techTargetMask[idx] = true
+    for ((idx, name) in techList.withIndex()) {
+        val tech = ruleset.technologies[name] ?: continue
+        if (!civ.tech.isResearched(name) &&
+            tech.prerequisites.all { civ.tech.isResearched(it) })
+            techTargetMask[idx] = true
     }
 
-    // ---- policy mask ------------------------------------------------------
+    // ---- policy mask -----------------------------------------------------
     val policyTargetMask = BooleanArray(policyList.size) { false }
     if (civ.policies.canAdoptPolicy()) {
-        for ((idx, policyName) in policyList.withIndex()) {
-            val policy = ruleset.policies[policyName] ?: continue
-            if (civ.policies.isAdoptable(policy)) policyTargetMask[idx] = true
+        for ((idx, name) in policyList.withIndex()) {
+            val policy = ruleset.policies[name] ?: continue
+            if (civ.policies.isAdoptable(policy))
+                policyTargetMask[idx] = true
         }
     }
 
-    // ---- diplomacy masks --------------------------------------------------
+    // ---- diplomacy masks -------------------------------------------------
     val diplomacyTargetMask = BooleanArray(allAgents.size) { false }
-    val diplomacySubactionMask = BooleanArray(3) { false }
-    for ((idx, otherId) in allAgents.withIndex()) {
-        if (otherId == agentCivId) continue
-        val otherCiv = gameInfo.getCivilizationOrNull(otherId) ?: continue
-        if (otherCiv.isDefeated()) continue
-        val dm = civ.getDiplomacyManager(otherCiv)
-        if (dm != null) {
+    for ((idx, id) in allAgents.withIndex()) {
+        if (id != agentCivId && gameInfo.getCivilizationOrNull(id) != null)
             diplomacyTargetMask[idx] = true
-            if (dm.diplomaticStatus != DiplomaticStatus.War) {
-                diplomacySubactionMask[DiplomacySubAction.DECLARE_WAR] = true
-                diplomacySubactionMask[DiplomacySubAction.OPEN_BORDERS] = true
-            } else {
-                diplomacySubactionMask[DiplomacySubAction.OFFER_PEACE] = true
-            }
+    }
+
+    val diplomacySubactionMask = BooleanArray(7) { false }
+    val majorCivs = allAgents.filter { it != agentCivId }
+        .mapNotNull { gameInfo.getCivilizationOrNull(it) }
+    diplomacySubactionMask[DiplomacySubAction.DECLARE_WAR] =
+        majorCivs.any { other ->
+            civ.getDiplomacyManager(other)?.diplomaticStatus != DiplomaticStatus.War
+        }
+    diplomacySubactionMask[DiplomacySubAction.OFFER_PEACE] =
+        majorCivs.any { other ->
+            civ.getDiplomacyManager(other)?.diplomaticStatus == DiplomaticStatus.War
+        }
+    diplomacySubactionMask[DiplomacySubAction.OPEN_BORDERS] = majorCivs.isNotEmpty()
+    diplomacySubactionMask[DiplomacySubAction.FRIENDSHIP] = majorCivs.isNotEmpty()
+    diplomacySubactionMask[DiplomacySubAction.DENOUNCE] = majorCivs.isNotEmpty()
+    diplomacySubactionMask[DiplomacySubAction.RESEARCH_AGREEMENT] = false
+    diplomacySubactionMask[DiplomacySubAction.DEFENSIVE_PACT] = false
+
+    // ---- tile target mask ------------------------------------------------
+    val tileTargetMask = BooleanArray(maxOf(sortedTiles.size, MAX_TILES)) { false }
+    // Reachable tiles for any unit
+    for (unit in actionableUnits) {
+        for (entry in unit.movement.getDistanceToTiles()) {
+            val idx = sortedTiles.indexOf(entry.key)
+            if (idx >= 0 && idx < tileTargetMask.size) tileTargetMask[idx] = true
+        }
+    }
+    // Purchasable tiles for any city
+    for (city in civ.cities) {
+        for (tile in sortedTiles.indices) {
+            val t = sortedTiles[tile]
+            if (city.expansion.canBuyTile(t) && tile < tileTargetMask.size)
+                tileTargetMask[tile] = true
         }
     }
 
-    // ---- production item mask (across all cities) -------------------------
-    val productionItemMask = BooleanArray(productionList.size) { false }
-    for (agentCity in civ.cities) {
-        for ((idx, itemName) in productionList.withIndex()) {
-            if (productionItemMask[idx]) continue  // already enabled
-            val construction = ruleset.buildings[itemName] ?: ruleset.units[itemName] ?: continue
-            if (construction.isBuildable(agentCity.cityConstructions)) productionItemMask[idx] = true
-        }
+    // ---- improvement target mask -----------------------------------------
+    val improvementTargetMask = BooleanArray(improvList.size) { false }
+    for ((idx, name) in improvList.withIndex()) {
+        val impr = ruleset.tileImprovements[name] ?: continue
+        if (workerUnits.any { worker ->
+            gameInfo.tileMap.values.any { tile -> tile.canBuildImprovement(impr, civ) }
+        }) improvementTargetMask[idx] = true
     }
 
     // ---- macro mask -------------------------------------------------------
-    val macroMask = booleanArrayOf(
-        true,                                                     // 0 END_TURN always valid
-        unitTargetMask.any { it },                                // 1 UNIT_ACTION
-        cityTargetMask.any { it },                                // 2 CITY_ACTION
-        techTargetMask.any { it },                                // 3 TECH_ACTION
-        diplomacyTargetMask.any { it },                           // 4 DIPLOMACY_ACTION
-        policyTargetMask.any { it },                              // 5 POLICY_ACTION
-        settlerTargetMask.any { it },                             // 6 SETTLER_ACTION
-        unitTargetMask.any { it }                                 // 7 IMPROVE_TILE (any unit could be a worker)
-    )
+    val macroMask = BooleanArray(10)
+    macroMask[MacroAction.END_TURN] = true
+    macroMask[MacroAction.UNIT_MOVE] = actionableUnits.any { !it.baseUnit.isCivilian() || it.baseUnit.isCivilian() }
+    macroMask[MacroAction.UNIT_ATTACK] = combatUnits.isNotEmpty()
+    macroMask[MacroAction.UNIT_ABILITY] = actionableUnits.isNotEmpty()
+    macroMask[MacroAction.CITY_ACTION] = civ.cities.isNotEmpty()
+    macroMask[MacroAction.TECH_RESEARCH] = techTargetMask.any { it }
+    macroMask[MacroAction.POLICY_ADOPT] = policyTargetMask.any { it }
+    macroMask[MacroAction.DIPLOMACY] = diplomacyTargetMask.any { it }
+    macroMask[MacroAction.WORKER_BUILD] = workerUnits.isNotEmpty() && improvementTargetMask.any { it }
+    macroMask[MacroAction.FOUNDER_SETTLE] = settlerUnits.isNotEmpty()
 
     return RLActionMaskResponse(
         gameId = gameInfo.gameId,
         agentCivId = agentCivId,
         macroMask = macroMask.toList(),
         unitTargetMask = unitTargetMask.toList(),
-        unitSubactionMask = unitSubactionSet.toList(),
+        unitSubactionMask = unitSubactionMask.toList(),
         cityTargetMask = cityTargetMask.toList(),
+        citySubactionMask = citySubactionMask.toList(),
+        productionTargetMask = productionTargetMask.toList(),
         techTargetMask = techTargetMask.toList(),
+        policyTargetMask = policyTargetMask.toList(),
         diplomacyTargetMask = diplomacyTargetMask.toList(),
         diplomacySubactionMask = diplomacySubactionMask.toList(),
-        policyTargetMask = policyTargetMask.toList(),
-        settlerTargetMask = settlerTargetMask.toList(),
-        productionItemMask = productionItemMask.toList()
+        tileTargetMask = tileTargetMask.toList(),
+        improvementTargetMask = improvementTargetMask.toList()
     )
 }

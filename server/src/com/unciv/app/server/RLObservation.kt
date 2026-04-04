@@ -19,74 +19,60 @@ import kotlin.math.roundToInt
 /** Maximum padded entity list length (units + cities per game). */
 const val MAX_ENTITIES = 512
 
+/** Maximum padded flat tile count in a map. */
+const val MAX_TILES = 2048
+
 /** Number of float features encoded per entity. */
-const val ENTITY_FEATURES = 28
+const val ENTITY_FEATURES = 32
 
 /** Number of spatial map channels. */
-const val N_MAP_CHANNELS = 13
+const val N_MAP_CHANNELS = 14
 
 // ---------------------------------------------------------------------------
 // Serializable data classes
 // ---------------------------------------------------------------------------
 
 /**
- * The 19 scalar game-state features for the current agent's civilisation.
+ * The 22 scalar game-state features for the current agent's civilisation.
+ * Raw values are provided; the Python layer handles normalisation.
  */
 @Serializable
 data class ScalarObservation(
-    /** Current game turn. */
     val turn: Int,
-    /** Index of the agent's civ in [RLObservationResponse.allAgents]. */
-    val currentPlayerId: Int,
-    /** Gold treasury. */
     val gold: Int,
-    /** Science yield for the upcoming turn. */
     val sciencePerTurn: Float,
-    /** Culture yield for the upcoming turn. */
     val culturePerTurn: Float,
-    /** Faith yield for the upcoming turn. */
     val faithPerTurn: Float,
-    /** Net happiness. */
     val happiness: Int,
-    /** Net gold yield for the upcoming turn (income − expenses including unit maintenance). */
     val netGoldPerTurn: Float,
-    /** Number of cities owned by the agent. */
     val cityCount: Int,
-    /** Sum of all city populations. */
     val totalPopulation: Int,
-    /**
-     * Research progress fraction [0..1] for the technology currently being studied.
-     * 0 if no technology is selected.
-     */
-    val techProgressCurrent: Float,
-    /**
-     * Policy progress fraction [0..1]: storedCulture / cost of the next policy.
-     * 0 if no culture policy is available.
-     */
-    val policyProgressCurrent: Float,
-    /**
-     * Bitmask: bit i is set when the agent is at war with civilisation index i.
-     * Civilisation order is the same as [RLObservationResponse.allAgents].
-     */
-    val warStateFlags: Int,
-    /**
-     * Overall victory progress [0..1]: fraction of the most-advanced victory milestone
-     * that the agent has completed.
-     */
-    val victoryProgress: Float,
-    /** 1 if the civilisation is currently in a golden age, 0 otherwise. */
-    val isInGoldenAge: Int,
-    /** Number of turns remaining in the current golden age (0 if not in one). */
-    val goldenAgeTurnsRemaining: Int,
-    /** Era number of the civilisation (0 = Ancient, 1 = Classical, …). */
+    /** Research progress [0,1] for the currently-studied technology. */
+    val techProgressFraction: Float,
+    /** Culture stored as a fraction of the cost of the next policy [0,1]. */
+    val policyProgressFraction: Float,
+    /** Era index: 0=Ancient, 1=Classical, 2=Medieval, … */
     val eraIndex: Int,
-    /** Number of free social-policy slots available to adopt this turn. */
+    /** 1 if the civilisation is currently in a golden age. */
+    val isInGoldenAge: Int,
+    /** Turns remaining in the current golden age (0 if not in one). */
+    val goldenAgeTurnsLeft: Int,
+    /** Number of free social-policy slots available this turn. */
     val freePolicies: Int,
-    /**
-     * Index of the technology currently being researched in the sorted tech list
-     * ([RLCatalogues.techNames]). −1 if no technology is queued.
-     */
-    val currentTechIndex: Int
+    /** Index into [RLCatalogues.techNames] for the tech being researched (−1=none). */
+    val currentTechIndex: Int,
+    /** Number of active wars. */
+    val warsCount: Int,
+    /** Total victory score. */
+    val score: Int,
+    /** Fraction of Science Victory milestones completed [0,1]. */
+    val scienceVictoryProgress: Float,
+    /** Fraction of Cultural Victory milestones completed [0,1]. */
+    val cultureVictoryProgress: Float,
+    /** Fraction of Domination Victory milestones completed [0,1]. */
+    val dominationVictoryProgress: Float,
+    /** Fraction of Diplomatic Victory milestones completed [0,1]. */
+    val diploVictoryProgress: Float
 )
 
 /**
@@ -101,27 +87,31 @@ data class ScalarObservation(
  *  4  visible              1 if currently visible to the agent, 0 otherwise
  *  5  hp                   current HP (0-100 for units; city defence HP for cities)
  *  6  max_hp               maximum HP
- *  7  movement             remaining movement points × 10 (int)
- *  8  strength             melee combat strength (0 for cities)
- *  9  ranged_strength      ranged strength (0 for melee/cities)
- * 10  population           city population (0 for units)
- * 11  production_stock     city production progress (0 for units)
- * 12  build_queue_id       index of the current construction in the available list (-1 if none)
- * 13  is_capital           1 if capital city
- * 14  is_garrisoned        1 if a unit is inside the city
+ *  7  strength             melee combat strength (0 for cities/civilians)
+ *  8  ranged_strength      ranged strength (0 for melee/cities)
+ *  9  movement             remaining movement points × 10 (0 for cities)
+ * 10  max_movement         base movement × 10 (0 for cities)
+ * 11  is_civilian          1 if civilian unit (0 for cities)
+ * 12  is_ranged            1 if unit has ranged attack (0 for cities)
+ * 13  can_found_city       1 if settler unit
+ * 14  can_improve          1 if worker unit
  * 15  is_fortified         1 if the unit is fortified
- * 16  has_action_available 1 if the unit has remaining movement or can still act
- * 17  terrain_type         index of the tile's base terrain in [RLObservationResponse.terrainTypes]
- * 18  feature_type         index of the tile's primary terrain feature (0 = none)
- * 19  resource_type        index of the tile's resource (0 = none)
- * 20  improvement_type     index of the tile's improvement (0 = none)
- * 21  road_level           0=None 1=Road 2=Railroad
- * 22  city_defenses        city defence HP (0 for units)
- * 23  founded_turn         game turn the city was founded (0 for units)
- * 24  last_action_turn     last turn the entity performed an action (placeholder, 0 for now)
- * 25  promotions_count     number of promotions taken by the unit (0 for cities)
- * 26  food_stock           food stored toward next population growth (0 for units)
- * 27  food_needed          food required for next population growth (0 for units)
+ * 16  can_act              1 if the unit has remaining movement or can still act
+ * 17  promotions           number of promotions taken (0 for cities)
+ * 18  population           city population (0 for units)
+ * 19  food_stock           food stored toward next population growth (0 for units)
+ * 20  food_needed          food required for next population growth (0 for units)
+ * 21  prod_stock           city production progress in current item (0 for units)
+ * 22  build_queue_id       index of the current construction (-1 if none / unit)
+ * 23  is_capital           1 if capital city
+ * 24  is_garrisoned        1 if a military unit is inside the city
+ * 25  terrain_type         index of the tile's base terrain
+ * 26  feature_type         index of the tile's primary terrain feature (0=none)
+ * 27  resource_type        index of the tile's resource (0=none)
+ * 28  improvement_type     index of the tile's improvement (0=none)
+ * 29  road_level           0=None 1=Road 2=Railroad
+ * 30  founded_turn         game turn the city was founded (0 for units)
+ * 31  unit_class           1=land 2=naval 3=air 4=civilian 0=city/pad
  */
 @Serializable
 data class EntityObservation(
@@ -132,20 +122,21 @@ data class EntityObservation(
  * A multi-channel spatial map.  Data is stored in row-major order:
  * index = channel * (height * width) + row * width + col
  *
- * Channel meanings (matching N_MAP_CHANNELS = 11):
+ * Channel meanings (matching N_MAP_CHANNELS = 14):
  *  0  terrain_type   index into [RLObservationResponse.terrainTypes]
  *  1  feature_type   index into [RLObservationResponse.featureTypes]
  *  2  resource_type  index into [RLObservationResponse.resourceTypes]
  *  3  ownership      index into allAgents, -1 = neutral/unknown
  *  4  visibility     0=unexplored  1=fog-of-war (explored but not currently visible)  2=visible
  *  5  city_presence  1 if a city is on this tile
- *  6  unit_presence  1 if a unit belonging to the agent is on this tile
- *  7  road_level     0=None 1=Road 2=Railroad
- *  8  improvement    index into [RLObservationResponse.improvementTypes]
- *  9  zoc            1 if this tile is inside an enemy zone of control
- * 10  threat_level   integer threat estimate (0–4)
- * 11  enemy_unit     1 if a visible enemy unit is present on this tile
+ *  6  own_unit       1 if a unit belonging to the agent is on this tile
+ *  7  enemy_unit     1 if a visible enemy unit is present on this tile
+ *  8  road_level     0=None 1=Road 2=Railroad
+ *  9  improvement    index into [RLObservationResponse.improvementTypes]
+ * 10  zoc            1 if this tile is inside an enemy zone of control
+ * 11  threat_level   integer threat estimate (0–4)
  * 12  own_territory  1 if this tile is owned by the observing civilisation
+ * 13  fresh_water    1 if adjacent to a river or lake (relevant for farms)
  */
 @Serializable
 data class MapPlanes(
@@ -174,6 +165,8 @@ data class RLCatalogues(
     val featureTypes: List<String>,
     val resourceTypes: List<String>,
     val improvementTypes: List<String>,
+    /** Sorted tile improvement names (used for WORKER_BUILD improvementTarget index). */
+    val improvementNames: List<String>,
     val techNames: List<String>,
     val policyNames: List<String>,
     val productionItemNames: List<String>
@@ -244,6 +237,7 @@ fun buildObservation(
         featureTypes = featureList,
         resourceTypes = resourceList,
         improvementTypes = improvementList,
+        improvementNames = ruleset.tileImprovements.keys.sorted(),
         techNames = techList,
         policyNames = policyList,
         productionItemNames = productionList
@@ -262,25 +256,26 @@ fun buildObservation(
         if (cultureCostNextPolicy > 0) civ.policies.storedCulture.toFloat() / cultureCostNextPolicy
         else 0f
 
-    var warFlags = 0
-    for ((idx, otherId) in allAgents.withIndex()) {
-        if (otherId == agentCivId) continue
-        val otherCiv = gameInfo.getCivilizationOrNull(otherId) ?: continue
-        val dm = civ.getDiplomacyManager(otherCiv) ?: continue
-        if (dm.diplomaticStatus == DiplomaticStatus.War) warFlags = warFlags or (1 shl idx)
+    val warsCount = allAgents.count { otherId ->
+        if (otherId == agentCivId) false
+        else gameInfo.getCivilizationOrNull(otherId)?.let { other ->
+            civ.getDiplomacyManager(other)?.diplomaticStatus ==
+                com.unciv.logic.civilization.diplomacy.DiplomaticStatus.War
+        } ?: false
     }
 
-    // Victory progress: fraction of milestones completed across all victory types
-    val allMilestones = ruleset.victories.values.flatMap { it.milestoneObjects }
-    val victoryProgress: Float = if (allMilestones.isEmpty()) 0f else
-        allMilestones.count { it.hasBeenCompletedBy(civ) }.toFloat() / allMilestones.size
+    // Per-victory-type progress fractions
+    fun victoryProgress(victoryName: String): Float {
+        val victory = ruleset.victories[victoryName] ?: return 0f
+        val milestones = victory.milestoneObjects
+        if (milestones.isEmpty()) return 0f
+        return milestones.count { it.hasBeenCompletedBy(civ) }.toFloat() / milestones.size
+    }
 
-    // Net gold per turn (includes unit maintenance as negative contribution)
     val netGoldPerTurn = statsNext.gold
 
     val scalars = ScalarObservation(
         turn = gameInfo.turns,
-        currentPlayerId = agentIndex,
         gold = civ.gold,
         sciencePerTurn = statsNext.science,
         culturePerTurn = statsNext.culture,
@@ -289,16 +284,20 @@ fun buildObservation(
         netGoldPerTurn = netGoldPerTurn,
         cityCount = civ.cities.size,
         totalPopulation = civ.cities.sumOf { it.population.population },
-        techProgressCurrent = techProgress.coerceIn(0f, 1f),
-        policyProgressCurrent = policyProgress.coerceIn(0f, 1f),
-        warStateFlags = warFlags,
-        victoryProgress = victoryProgress.coerceIn(0f, 1f),
-        isInGoldenAge = if (civ.goldenAges.isGoldenAge()) 1 else 0,
-        goldenAgeTurnsRemaining = civ.goldenAges.turnsLeftForCurrentGoldenAge,
+        techProgressFraction = techProgress.coerceIn(0f, 1f),
+        policyProgressFraction = policyProgress.coerceIn(0f, 1f),
         eraIndex = civ.getEraNumber(),
+        isInGoldenAge = if (civ.goldenAges.isGoldenAge()) 1 else 0,
+        goldenAgeTurnsLeft = civ.goldenAges.turnsLeftForCurrentGoldenAge,
         freePolicies = civ.policies.freePolicies,
         currentTechIndex = civ.tech.currentTechnologyName()
-            ?.let { name -> techList.indexOf(name).let { if (it < 0) -1 else it } } ?: -1
+            ?.let { name -> techList.indexOf(name).let { if (it < 0) -1 else it } } ?: -1,
+        warsCount = warsCount,
+        score = civ.calculateTotalScore().toInt(),
+        scienceVictoryProgress = victoryProgress("Scientific Victory").coerceIn(0f, 1f),
+        cultureVictoryProgress = victoryProgress("Cultural Victory").coerceIn(0f, 1f),
+        dominationVictoryProgress = victoryProgress("Domination Victory").coerceIn(0f, 1f),
+        diploVictoryProgress = victoryProgress("Diplomatic Victory").coerceIn(0f, 1f)
     )
 
     // ---- entities ---------------------------------------------------------
@@ -402,36 +401,50 @@ private fun encodeUnit(
     val roadLevel = when (tile.getUnpillagedRoad()) {
         RoadStatus.None -> 0; RoadStatus.Road -> 1; RoadStatus.Railroad -> 2
     }
+    val isCivilian = if (unit.baseUnit.isCivilian()) 1 else 0
+    val isRanged = if (unit.baseUnit.rangedStrength > 0) 1 else 0
+    val canFoundCity = if (unit.baseUnit.hasUnique("Founds a new city")) 1 else 0
+    val canImprove = if (unit.baseUnit.hasUnique("Can build improvements on tiles")) 1 else 0
+    val unitClass = when {
+        unit.baseUnit.isCivilian() -> 4
+        unit.baseUnit.isAirUnit() -> 3
+        unit.type.isWaterUnit() -> 2
+        else -> 1
+    }
 
     val features = listOf(
         2,                                                    //  0 entity_type = unit
         ownerId,                                              //  1 owner_id
-        tile.position.x,                                      //  2 x
-        tile.position.y,                                      //  3 y
+        tile.position.x.toInt(),                              //  2 x
+        tile.position.y.toInt(),                              //  3 y
         if (visible) 1 else 0,                               //  4 visible
         unit.health,                                          //  5 hp
         100,                                                  //  6 max_hp
-        (unit.currentMovement * 10).roundToInt(),             //  7 movement ×10
-        unit.baseUnit.strength,                               //  8 strength
-        unit.baseUnit.rangedStrength,                         //  9 ranged_strength
-        0,                                                    // 10 population
-        0,                                                    // 11 production_stock
-        -1,                                                   // 12 build_queue_id
-        0,                                                    // 13 is_capital
-        0,                                                    // 14 is_garrisoned
+        unit.baseUnit.strength,                               //  7 strength
+        unit.baseUnit.rangedStrength,                         //  8 ranged_strength
+        (unit.currentMovement * 10).roundToInt(),             //  9 movement ×10
+        (unit.baseUnit.movement * 10),                        // 10 max_movement ×10
+        isCivilian,                                           // 11 is_civilian
+        isRanged,                                             // 12 is_ranged
+        canFoundCity,                                         // 13 can_found_city
+        canImprove,                                           // 14 can_improve
         if (unit.isFortified()) 1 else 0,                    // 15 is_fortified
-        if (unit.due && unit.currentMovement > 0f) 1 else 0, // 16 has_action_available
-        terrainIdx,                                           // 17 terrain_type
-        featureIdx,                                           // 18 feature_type
-        resourceIdx,                                          // 19 resource_type
-        improvIdx,                                            // 20 improvement_type
-        roadLevel,                                            // 21 road_level
-        0,                                                    // 22 city_defenses
-        0,                                                    // 23 founded_turn
-        0,                                                    // 24 last_action_turn
-        unit.promotions.numberOfPromotions,                   // 25 promotions_count
-        0,                                                    // 26 food_stock
-        0                                                     // 27 food_needed
+        if (unit.due && unit.currentMovement > 0f) 1 else 0, // 16 can_act
+        unit.promotions.numberOfPromotions,                   // 17 promotions
+        0,                                                    // 18 population (0 for units)
+        0,                                                    // 19 food_stock (0 for units)
+        0,                                                    // 20 food_needed (0 for units)
+        0,                                                    // 21 prod_stock (0 for units)
+        -1,                                                   // 22 build_queue_id (−1 for units)
+        0,                                                    // 23 is_capital (0 for units)
+        0,                                                    // 24 is_garrisoned (0 for units)
+        terrainIdx,                                           // 25 terrain_type
+        featureIdx,                                           // 26 feature_type
+        resourceIdx,                                          // 27 resource_type
+        improvIdx,                                            // 28 improvement_type
+        roadLevel,                                            // 29 road_level
+        0,                                                    // 30 founded_turn (0 for units)
+        unitClass                                             // 31 unit_class
     )
     return EntityObservation(features = features)
 }
@@ -471,35 +484,41 @@ private fun encodeCity(
         city.cityConstructions.getWorkDone(currentConstructionName)
     else 0
 
+    val maxHp = 200 + city.cityConstructions.getBuiltBuildings().sumOf { it.cityHealth }
+
     val features = listOf(
         1,                                              //  0 entity_type = city
         ownerId,                                        //  1 owner_id
-        tile.position.x,                                //  2 x
-        tile.position.y,                                //  3 y
+        tile.position.x.toInt(),                        //  2 x
+        tile.position.y.toInt(),                        //  3 y
         if (visible) 1 else 0,                          //  4 visible
         city.health,                                    //  5 hp (city defence HP)
-        200 + city.cityConstructions.getBuiltBuildings().sumOf { it.cityHealth }, //  6 max_hp
-        0,                                              //  7 movement
-        0,                                              //  8 strength
-        0,                                              //  9 ranged_strength
-        city.population.population,                     // 10 population
-        productionProgress,                             // 11 production_stock
-        buildQueueId,                                   // 12 build_queue_id
-        if (city.isCapital()) 1 else 0,                 // 13 is_capital
-        if (tile.militaryUnit != null) 1 else 0,        // 14 is_garrisoned
-        0,                                              // 15 is_fortified
-        0,                                              // 16 has_action_available
-        terrainIdx,                                     // 17 terrain_type
-        featureIdx,                                     // 18 feature_type
-        resourceIdx,                                    // 19 resource_type
-        improvIdx,                                      // 20 improvement_type
-        roadLevel,                                      // 21 road_level
-        city.health,                                    // 22 city_defenses
-        city.turnAcquired,                              // 23 founded_turn
-        0,                                              // 24 last_action_turn
-        0,                                              // 25 promotions_count
-        city.population.foodStored,                     // 26 food_stock
-        city.population.getFoodToNextPopulation()       // 27 food_needed
+        maxHp,                                          //  6 max_hp
+        0,                                              //  7 strength (0 for cities)
+        0,                                              //  8 ranged_strength (0 for cities)
+        0,                                              //  9 movement (0 for cities)
+        0,                                              // 10 max_movement (0 for cities)
+        0,                                              // 11 is_civilian (0 for cities)
+        0,                                              // 12 is_ranged (0 for cities)
+        0,                                              // 13 can_found_city (0 for cities)
+        0,                                              // 14 can_improve (0 for cities)
+        0,                                              // 15 is_fortified (0 for cities)
+        0,                                              // 16 can_act (0 for cities)
+        0,                                              // 17 promotions (0 for cities)
+        city.population.population,                     // 18 population
+        city.population.foodStored,                     // 19 food_stock
+        city.population.getFoodToNextPopulation(),      // 20 food_needed
+        productionProgress,                             // 21 prod_stock
+        buildQueueId,                                   // 22 build_queue_id
+        if (city.isCapital()) 1 else 0,                 // 23 is_capital
+        if (tile.militaryUnit != null) 1 else 0,        // 24 is_garrisoned
+        terrainIdx,                                     // 25 terrain_type
+        featureIdx,                                     // 26 feature_type
+        resourceIdx,                                    // 27 resource_type
+        improvIdx,                                      // 28 improvement_type
+        roadLevel,                                      // 29 road_level
+        city.turnAcquired,                              // 30 founded_turn
+        0                                               // 31 unit_class (0 for cities)
     )
     return EntityObservation(features = features)
 }
@@ -578,23 +597,24 @@ private fun buildMapPlanes(
         data[4 * tileCount + i] = visibilityCode
         data[5 * tileCount + i] = cityPresence
         data[6 * tileCount + i] = unitPresence
-        data[7 * tileCount + i] = roadLevel
-        data[8 * tileCount + i] = improvIdx
-        data[9 * tileCount + i] = zoc
-        data[10 * tileCount + i] = threat
-
-        // Channel 11: enemy_unit – 1 if a visible enemy unit is on this tile
+        // Channel 7: enemy_unit – 1 if a visible enemy unit is on this tile
         val enemyUnit = if (visible) {
             if (tile.getUnits().any { u ->
                 val dm = observer.getDiplomacyManager(u.civ)
                 dm?.diplomaticStatus == DiplomaticStatus.War
             }) 1 else 0
         } else 0
-        data[11 * tileCount + i] = enemyUnit
-
-        // Channel 12: own_territory – 1 if tile is owned by the observing civ
+        data[7 * tileCount + i] = enemyUnit
+        data[8 * tileCount + i] = roadLevel
+        data[9 * tileCount + i] = improvIdx
+        data[10 * tileCount + i] = zoc
+        data[11 * tileCount + i] = threat
+        // Channel 12: own_territory
         val ownTerritory = if (tile.getOwner() == observer) 1 else 0
         data[12 * tileCount + i] = ownTerritory
+        // Channel 13: fresh_water – 1 if tile is adjacent to a river or lake
+        val freshWater = if (tile.isAdjacentToRiver()) 1 else 0
+        data[13 * tileCount + i] = freshWater
     }
 
     return MapPlanes(

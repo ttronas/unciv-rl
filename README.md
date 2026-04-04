@@ -130,3 +130,166 @@ Or just use our already built one:
 
 and then goto http://localhost:6901/vnc.html?password=headless
 ## [Credits and 3rd parties](docs/Credits.md)
+
+---
+
+## RL Environment
+
+The `rl_env/` directory contains a [PettingZoo](https://pettingzoo.farama.org/) AEC multi-agent environment that wraps the Unciv game engine via a REST API.  The Kotlin server exposes `/rl/*` endpoints when launched with the `--rl` flag; the Python package connects to these endpoints.
+
+### Observation Space
+
+Each agent receives a `Dict` observation with the following keys:
+
+| Key | Shape | Description |
+|---|---|---|
+| `scalars` | `(22,) float32` | Global civilisation state (see table below) |
+| `entities` | `(512, 32) float32` | All visible units and cities, padded to 512 |
+| `map_planes` | `(14, 2048) float32` | 14-channel spatial map, flattened to 2048 tiles |
+| `visibility_mask` | `(512,) int8` | 1 for real entities, 0 for padding slots |
+| `action_mask` | `Dict` | Legal action mask (see Action Space) |
+
+#### Scalar features (22 values, index order)
+
+| # | Name | Description |
+|---|---|---|
+| 0 | `turn` | Current game turn |
+| 1 | `gold` | Gold treasury |
+| 2 | `sciencePerTurn` | Science yield per turn |
+| 3 | `culturePerTurn` | Culture yield per turn |
+| 4 | `faithPerTurn` | Faith yield per turn |
+| 5 | `happiness` | Net happiness |
+| 6 | `netGoldPerTurn` | Net gold per turn (income − expenses) |
+| 7 | `cityCount` | Number of cities |
+| 8 | `totalPopulation` | Sum of all city populations |
+| 9 | `techProgressFraction` | Current tech research progress [0, 1] |
+| 10 | `policyProgressFraction` | Culture toward next policy [0, 1] |
+| 11 | `eraIndex` | Era (0=Ancient, 1=Classical, …) |
+| 12 | `isInGoldenAge` | 1 if currently in a golden age |
+| 13 | `goldenAgeTurnsLeft` | Turns remaining in current golden age |
+| 14 | `freePolicies` | Free policy slots available now |
+| 15 | `currentTechIndex` | Index of tech being researched (−1=none) |
+| 16 | `warsCount` | Number of active wars |
+| 17 | `score` | Total victory score |
+| 18 | `scienceVictoryProgress` | Science victory completion [0, 1] |
+| 19 | `cultureVictoryProgress` | Cultural victory completion [0, 1] |
+| 20 | `dominationVictoryProgress` | Domination victory completion [0, 1] |
+| 21 | `diploVictoryProgress` | Diplomatic victory completion [0, 1] |
+
+#### Entity features (32 values per entity)
+
+| # | Name | Notes |
+|---|---|---|
+| 0 | `entity_type` | 0=padding, 1=city, 2=unit |
+| 1 | `owner_id` | Agent index (−1=enemy/neutral) |
+| 2–3 | `x`, `y` | Hex grid coordinates |
+| 4 | `visible` | 1 if currently visible |
+| 5–6 | `hp`, `max_hp` | Hit points |
+| 7–8 | `strength`, `ranged_strength` | Combat stats |
+| 9–10 | `movement`, `max_movement` | Remaining / base movement × 10 |
+| 11 | `is_civilian` | 1 if civilian unit |
+| 12 | `is_ranged` | 1 if has ranged attack |
+| 13 | `can_found_city` | 1 if settler |
+| 14 | `can_improve` | 1 if worker |
+| 15 | `is_fortified` | 1 if fortified |
+| 16 | `can_act` | 1 if has actions remaining |
+| 17 | `promotions` | Number of promotions taken |
+| 18–20 | `population`, `food_stock`, `food_needed` | City growth stats |
+| 21–22 | `prod_stock`, `build_queue_id` | City production progress and item |
+| 23–24 | `is_capital`, `is_garrisoned` | City flags |
+| 25–29 | `terrain`, `feature`, `resource`, `improvement`, `road_level` | Tile under entity |
+| 30 | `founded_turn` | Turn city was founded |
+| 31 | `unit_class` | 0=city/pad, 1=land, 2=naval, 3=air, 4=civilian |
+
+#### Map channels (14)
+
+| # | Name | Description |
+|---|---|---|
+| 0 | terrain | Base terrain index |
+| 1 | feature | Terrain feature index |
+| 2 | resource | Resource index |
+| 3 | ownership | Owner agent index (−1=neutral) |
+| 4 | visibility | 0=unexplored, 1=fog, 2=visible |
+| 5 | city_presence | 1 if city present |
+| 6 | own_unit | 1 if agent's own unit |
+| 7 | enemy_unit | 1 if visible enemy unit |
+| 8 | road_level | 0/1/2 |
+| 9 | improvement | Improvement index |
+| 10 | zoc | 1 if in enemy zone of control |
+| 11 | threat | Threat estimate 0–4 |
+| 12 | own_territory | 1 if owned by agent's civ |
+| 13 | fresh_water | 1 if adjacent to river/lake |
+
+---
+
+### Action Space
+
+Actions are represented as a `Dict` with **12 keys**.  Only the keys relevant to the chosen `macro` need to be set; unused fields are ignored.
+
+| Key | Size | Used by macro |
+|---|---|---|
+| `macro` | 10 | always |
+| `unit_target` | 512 | UNIT_MOVE, UNIT_ATTACK, UNIT_ABILITY, WORKER_BUILD, FOUNDER_SETTLE |
+| `unit_subaction` | 7 | UNIT_ABILITY |
+| `city_target` | 512 | CITY_ACTION |
+| `city_subaction` | 4 | CITY_ACTION |
+| `production_target` | dynamic | CITY_ACTION |
+| `tech_target` | dynamic | TECH_RESEARCH |
+| `policy_target` | dynamic | POLICY_ADOPT |
+| `diplomacy_target` | dynamic | DIPLOMACY |
+| `diplomacy_subaction` | 7 | DIPLOMACY |
+| `tile_target` | 2048 | UNIT_MOVE, UNIT_ATTACK, CITY BUY_TILE, WORKER_BUILD |
+| `improvement_target` | dynamic | WORKER_BUILD |
+
+#### Macro actions (10)
+
+| Code | Name | Description |
+|---|---|---|
+| 0 | `end_turn` | End the agent's turn |
+| 1 | `unit_move` | Move unit (`unit_target`) to tile (`tile_target`) |
+| 2 | `unit_attack` | Attack tile (`tile_target`) with unit (`unit_target`) |
+| 3 | `unit_ability` | Unit non-move ability: fortify / heal / skip / promote / pillage / disband / found_city |
+| 4 | `city_action` | City management: set/buy production, sell building, buy tile |
+| 5 | `tech_research` | Queue a technology for research |
+| 6 | `policy_adopt` | Adopt a social policy |
+| 7 | `diplomacy` | Declare war, offer peace, open borders, friendship, denounce, … |
+| 8 | `worker_build` | Worker builds an improvement on a tile |
+| 9 | `founder_settle` | Settler founds a city at its current tile |
+
+#### Unit sub-actions (for `unit_ability`)
+
+`fortify` (0), `heal` (1), `skip` (2), `promote` (3), `pillage` (4), `disband` (5), `found_city` (6)
+
+#### City sub-actions (for `city_action`)
+
+`set_production` (0), `buy_production` (1), `sell_building` (2), `buy_tile` (3)
+
+#### Diplomacy sub-actions
+
+`declare_war` (0), `offer_peace` (1), `open_borders` (2), `friendship` (3), `denounce` (4), `research_agreement` (5), `defensive_pact` (6)
+
+---
+
+### Quickstart
+
+```python
+from rl_env import UncivEnv
+from rl_env.constants import MACRO_END_TURN
+
+env = UncivEnv(base_url="http://localhost:8080", num_agents=2, num_ai=0)
+observations, infos = env.reset(seed=42)
+
+while env.agents:
+    agent = env.agent_selection
+    action_mask = infos[agent]["action_mask"]
+    # Sample a legal action using the mask
+    action = env.action_space(agent).sample(action_mask)
+    env.step(action)
+env.close()
+```
+
+Start the server with:
+
+```bash
+./gradlew server:run --args="--rl --port 8080"
+```
