@@ -27,6 +27,7 @@ import numpy as np
 from rl_env.constants import (
     ENTITY_FEATURES,
     MAX_ENTITIES,
+    MAX_SUBACTIONS,
     N_MAP_CHANNELS,
     N_SCALAR_FEATURES,
     MACRO_END_TURN,
@@ -58,6 +59,11 @@ def _make_scalars_json() -> dict:
         "policyProgressCurrent": 0.1,
         "warStateFlags": 0,
         "victoryProgress": 0.05,
+        "isInGoldenAge": 0,
+        "goldenAgeTurnsRemaining": 0,
+        "eraIndex": 1,
+        "freePolicies": 0,
+        "currentTechIndex": 3,
     }
 
 
@@ -106,8 +112,9 @@ def _make_mask_json(num_agents: int = 2) -> dict:
         "agentCivId": "Rome",
         "macroMask": [True, True, False, True, False, False, False, False],
         "unitTargetMask": ([True] * 3 + [False] * (MAX_ENTITIES - 3)),
-        "unitSubactionMask": [True, False, True, True, False, False, False, False],
+        "unitSubactionMask": [True, False, True, True, False, False, False, False, False],
         "cityTargetMask": ([False] * MAX_ENTITIES),
+        "citySubactionMask": [True, False, False],
         "techTargetMask": [True, False, True],
         "diplomacyTargetMask": [False] * num_agents,
         "diplomacySubactionMask": [False, False, False],
@@ -169,6 +176,8 @@ class TestObsParser(unittest.TestCase):
         mask = parse_action_mask(_make_mask_json())
         self.assertEqual(len(mask["macro"]), 8)
         self.assertEqual(len(mask["unit_target"]), MAX_ENTITIES)
+        self.assertEqual(len(mask["unit_subaction"]), MAX_SUBACTIONS)
+        self.assertEqual(len(mask["city_subaction"]), 3)
         self.assertEqual(len(mask["tech_target"]), 3)
         self.assertEqual(len(mask["policy_target"]), 2)
 
@@ -248,10 +257,16 @@ class TestSpaces(unittest.TestCase):
         sp = UncivSpaces()
         act_space = sp.action_space()
         self.assertIn("macro", act_space.spaces)
-        self.assertIn("target", act_space.spaces)
-        self.assertIn("subaction", act_space.spaces)
-        self.assertIn("arg1", act_space.spaces)
-        self.assertIn("arg2", act_space.spaces)
+        self.assertIn("unit_target", act_space.spaces)
+        self.assertIn("unit_subaction", act_space.spaces)
+        self.assertIn("city_target", act_space.spaces)
+        self.assertIn("city_subaction", act_space.spaces)
+        self.assertIn("tech_target", act_space.spaces)
+        self.assertIn("diplomacy_target", act_space.spaces)
+        self.assertIn("diplomacy_subaction", act_space.spaces)
+        self.assertIn("policy_target", act_space.spaces)
+        self.assertIn("settler_target", act_space.spaces)
+        self.assertIn("production_items", act_space.spaces)
 
     def test_observation_space_scalar_shape(self):
         sp = UncivSpaces()

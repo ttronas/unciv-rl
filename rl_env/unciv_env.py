@@ -259,7 +259,7 @@ class UncivEnv(AECEnv):
 
         # Encode and send the action
         if action is None:
-            wire_action = {"macro": MACRO_END_TURN, "target": 0, "subaction": 0, "arg1": 0, "arg2": 0}
+            wire_action = encode_action({"macro": MACRO_END_TURN})
         else:
             wire_action = encode_action(action)
 
@@ -280,7 +280,7 @@ class UncivEnv(AECEnv):
             self.agents = []
         else:
             # Advance agent selection (the server already moved to next agent after END_TURN)
-            if wire_action["macro"] == MACRO_END_TURN:
+            if wire_action.get("macro") == MACRO_END_TURN:
                 state_json = self._client.get_state(self._game_id)
                 next_agent = state_json.get("agentCivId", current_agent)
                 self.agent_selection = next_agent

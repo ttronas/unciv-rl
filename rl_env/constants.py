@@ -13,26 +13,26 @@ These values must stay in sync with the Kotlin-side constants defined in
 MAX_ENTITIES: int = 512
 
 #: Number of float features per entity (matches ENTITY_FEATURES in Kotlin).
-ENTITY_FEATURES: int = 25
+ENTITY_FEATURES: int = 28
 
 #: Number of spatial map channels (matches N_MAP_CHANNELS in Kotlin).
-N_MAP_CHANNELS: int = 11
+N_MAP_CHANNELS: int = 13
 
 #: Number of scalar features in the ScalarObservation.
-N_SCALAR_FEATURES: int = 14
+N_SCALAR_FEATURES: int = 19
 
 # ---------------------------------------------------------------------------
 # Action-space constants
 # ---------------------------------------------------------------------------
 
-#: Number of macro action categories.
+#: Maximum number of macro action categories.
 N_MACRO_ACTIONS: int = 8
 
 #: Maximum number of action targets (entity index, tech index, etc.).
 MAX_TARGETS: int = 512
 
 #: Maximum number of sub-actions per macro.
-MAX_SUBACTIONS: int = 8
+MAX_SUBACTIONS: int = 9
 
 #: Maximum number of first arguments (e.g. production item index).
 MAX_ARG1: int = 64
@@ -76,6 +76,7 @@ UNIT_SUBACTION_PROMOTE: int = 4
 UNIT_SUBACTION_PILLAGE: int = 5
 UNIT_SUBACTION_DISBAND: int = 6
 UNIT_SUBACTION_FOUND_CITY: int = 7
+UNIT_SUBACTION_HEAL: int = 8
 
 UNIT_SUBACTION_NAMES = [
     "move",
@@ -86,6 +87,7 @@ UNIT_SUBACTION_NAMES = [
     "pillage",
     "disband",
     "found_city",
+    "heal",
 ]
 
 # ---------------------------------------------------------------------------
@@ -153,6 +155,12 @@ FEAT_ROAD_LEVEL: int = 21
 FEAT_CITY_DEFENSES: int = 22
 FEAT_FOUNDED_TURN: int = 23
 FEAT_LAST_ACTION_TURN: int = 24
+#: Number of promotions taken by a unit (0 for cities).
+FEAT_PROMOTIONS_COUNT: int = 25
+#: Food stored toward next population growth (0 for units).
+FEAT_FOOD_STOCK: int = 26
+#: Food needed to reach next population growth (0 for units).
+FEAT_FOOD_NEEDED: int = 27
 
 # ---------------------------------------------------------------------------
 # Map channel indices (see RLObservation.kt for docs)
@@ -169,3 +177,36 @@ CHAN_ROAD_LEVEL: int = 7
 CHAN_IMPROVEMENT: int = 8
 CHAN_ZOC: int = 9
 CHAN_THREAT: int = 10
+#: 1 if a visible enemy unit is present on this tile.
+CHAN_ENEMY_UNIT: int = 11
+#: 1 if the tile is owned by the observing civilisation.
+CHAN_OWN_TERRITORY: int = 12
+
+# ---------------------------------------------------------------------------
+# Scalar observation indices (see RLObservation.kt for docs)
+# ---------------------------------------------------------------------------
+
+SCALAR_TURN: int = 0
+SCALAR_CURRENT_PLAYER_ID: int = 1
+SCALAR_GOLD: int = 2
+SCALAR_SCIENCE_PER_TURN: int = 3
+SCALAR_CULTURE_PER_TURN: int = 4
+SCALAR_FAITH_PER_TURN: int = 5
+SCALAR_HAPPINESS: int = 6
+SCALAR_NET_GOLD_PER_TURN: int = 7
+SCALAR_CITY_COUNT: int = 8
+SCALAR_TOTAL_POPULATION: int = 9
+SCALAR_TECH_PROGRESS: int = 10
+SCALAR_POLICY_PROGRESS: int = 11
+SCALAR_WAR_FLAGS: int = 12
+SCALAR_VICTORY_PROGRESS: int = 13
+#: 1 if the civilisation is currently in a golden age, 0 otherwise.
+SCALAR_IS_GOLDEN_AGE: int = 14
+#: Turns remaining in the current golden age (0 if not in one).
+SCALAR_GOLDEN_AGE_TURNS: int = 15
+#: Era number of the civilisation (0=Ancient, 1=Classical, …).
+SCALAR_ERA_INDEX: int = 16
+#: Number of free social-policy slots available to adopt right now.
+SCALAR_FREE_POLICIES: int = 17
+#: Index of the technology currently being researched (−1 if none).
+SCALAR_CURRENT_TECH_INDEX: int = 18

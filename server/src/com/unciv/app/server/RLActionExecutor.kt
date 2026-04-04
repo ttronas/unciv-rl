@@ -40,6 +40,8 @@ object UnitSubAction {
     const val PILLAGE = 5
     const val DISBAND = 6
     const val FOUND_CITY = 7
+    /** Unit stays in place to recover HP; movement is consumed. */
+    const val HEAL = 8
 }
 
 /** City sub-action codes used in [RLAction.subaction] when macro == CITY_ACTION. */

@@ -16,6 +16,15 @@ from rl_env.constants import (
     MAX_ARG1,
     MAX_ARG2,
     MACRO_NAMES,
+    MACRO_END_TURN,
+    MACRO_UNIT_ACTION,
+    MACRO_CITY_ACTION,
+    MACRO_TECH_ACTION,
+    MACRO_DIPLOMACY_ACTION,
+    MACRO_POLICY_ACTION,
+    MACRO_SETTLER_ACTION,
+    MACRO_IMPROVE_TILE,
+    UNIT_SUBACTION_FOUND_CITY,
     UNIT_SUBACTION_NAMES,
     CITY_SUBACTION_NAMES,
     DIPLOMACY_SUBACTION_NAMES,
@@ -28,14 +37,23 @@ from rl_env.constants import (
 
 def encode_action(action: dict[str, int] | np.ndarray) -> dict[str, int]:
     """
-    Validate and convert an action dict (or 5-element integer array) into the
-    JSON-serialisable payload expected by ``POST /rl/action/{gameId}``.
+    Validate and convert an action into the JSON-serialisable payload expected
+    by ``POST /rl/action/{gameId}``.
 
-    Parameters
-    ----------
-    action:
-        Either a dict with at minimum the key ``"macro"``, or a length-5
-        integer array ``[macro, target, subaction, arg1, arg2]``.
+    The function accepts three input formats:
+
+    1. **Semantic dict** (keys matching :meth:`rl_env.spaces.UncivSpaces.action_space`):
+       ``macro``, ``unit_target``, ``unit_subaction``, ``city_target``,
+       ``city_subaction``, ``tech_target``, ``diplomacy_target``,
+       ``diplomacy_subaction``, ``policy_target``, ``settler_target``,
+       ``production_items``.  The appropriate target/subaction/arg1/arg2 fields
+       are selected based on the value of ``macro``.
+
+    2. **Wire dict** (legacy, keys ``macro``, ``target``, ``subaction``,
+       ``arg1``, ``arg2``): passed through as-is after bounds validation.
+
+    3. **Array** ``[macro, target, subaction, arg1, arg2]``: 5-element
+       integer array treated as wire format.
 
     Returns
     -------
@@ -55,7 +73,11 @@ def encode_action(action: dict[str, int] | np.ndarray) -> dict[str, int]:
                 f"got {len(action_array)}"
             )
         macro, target, subaction, arg1, arg2 = (int(x) for x in action_array)
+    elif _is_semantic(action):
+        macro = int(action.get("macro", 0))
+        target, subaction, arg1, arg2 = _decode_semantic(macro, action)
     else:
+        # Wire format: target, subaction, arg1, arg2 supplied directly
         macro = int(action.get("macro", 0))
         target = int(action.get("target", 0))
         subaction = int(action.get("subaction", 0))
@@ -146,6 +168,52 @@ def describe_action(action: dict[str, int]) -> str:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _is_semantic(action: dict) -> bool:
+    """Return True when *action* uses the semantic key format from action_space."""
+    return any(k in action for k in (
+        "unit_target", "city_target", "tech_target",
+        "diplomacy_target", "policy_target", "settler_target",
+    ))
+
+
+def _decode_semantic(macro: int, action: dict) -> tuple[int, int, int, int]:
+    """Map semantic action keys to (target, subaction, arg1, arg2) wire format."""
+    if macro == MACRO_END_TURN:
+        return 0, 0, 0, 0
+    if macro == MACRO_UNIT_ACTION:
+        return (
+            int(action.get("unit_target", 0)),
+            int(action.get("unit_subaction", 0)),
+            0,  # tile/promotion index not in semantic space; server validates
+            0,
+        )
+    if macro == MACRO_CITY_ACTION:
+        return (
+            int(action.get("city_target", 0)),
+            int(action.get("city_subaction", 0)),
+            int(action.get("production_items", 0)),  # arg1 = production item index
+            0,
+        )
+    if macro == MACRO_TECH_ACTION:
+        return int(action.get("tech_target", 0)), 0, 0, 0
+    if macro == MACRO_DIPLOMACY_ACTION:
+        return (
+            int(action.get("diplomacy_target", 0)),
+            int(action.get("diplomacy_subaction", 0)),
+            0,
+            0,
+        )
+    if macro == MACRO_POLICY_ACTION:
+        return int(action.get("policy_target", 0)), 0, 0, 0
+    if macro == MACRO_SETTLER_ACTION:
+        return int(action.get("settler_target", 0)), UNIT_SUBACTION_FOUND_CITY, 0, 0
+    if macro == MACRO_IMPROVE_TILE:
+        # wire: target=tile_idx, subaction=improve_type, arg1=worker_entity_idx
+        # semantic: unit_target=worker entity (no explicit tile_target in space)
+        return 0, 0, int(action.get("unit_target", 0)), 0
+    return 0, 0, 0, 0
+
 
 def _validate_bounds(name: str, value: int, max_exclusive: int) -> None:
     if not (0 <= value < max_exclusive):

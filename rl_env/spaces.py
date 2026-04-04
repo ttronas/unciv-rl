@@ -76,9 +76,10 @@ class UncivSpaces:
         action_mask:
             A nested ``Dict`` with the same sub-keys as the action space
             (``macro``, ``unit_target``, ``unit_subaction``, ``city_target``,
-            ``tech_target``, ``diplomacy_target``, ``diplomacy_subaction``,
-            ``policy_target``, ``settler_target``, ``production_items``),
-            each being a ``MultiBinary`` mask over valid indices.
+            ``city_subaction``, ``tech_target``, ``diplomacy_target``,
+            ``diplomacy_subaction``, ``policy_target``, ``settler_target``,
+            ``production_items``), each being a ``MultiBinary`` mask over valid
+            indices.
         """
         return spaces.Dict(
             {
@@ -129,6 +130,9 @@ class UncivSpaces:
             (move, attack, fortify, …).
         city_target:
             ``Discrete(MAX_ENTITIES)`` – which city entity to act on.
+        city_subaction:
+            ``Discrete(3)`` – city sub-action (set production / buy production
+            / sell building).
         tech_target:
             ``Discrete(num_techs)`` – which technology to research.
         diplomacy_target:
@@ -151,6 +155,7 @@ class UncivSpaces:
                 "unit_target": spaces.Discrete(MAX_ENTITIES),
                 "unit_subaction": spaces.Discrete(MAX_SUBACTIONS),
                 "city_target": spaces.Discrete(MAX_ENTITIES),
+                "city_subaction": spaces.Discrete(3),
                 "tech_target": spaces.Discrete(self.num_techs),
                 "diplomacy_target": spaces.Discrete(self.num_agents),
                 "diplomacy_subaction": spaces.Discrete(3),
@@ -170,6 +175,7 @@ class UncivSpaces:
                 "unit_target": spaces.MultiBinary(MAX_ENTITIES),
                 "unit_subaction": spaces.MultiBinary(MAX_SUBACTIONS),
                 "city_target": spaces.MultiBinary(MAX_ENTITIES),
+                "city_subaction": spaces.MultiBinary(3),
                 "tech_target": spaces.MultiBinary(self.num_techs),
                 "diplomacy_target": spaces.MultiBinary(self.num_agents),
                 "diplomacy_subaction": spaces.MultiBinary(3),

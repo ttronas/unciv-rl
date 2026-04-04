@@ -79,6 +79,7 @@ def parse_action_mask(mask_json: dict[str, Any]) -> dict[str, np.ndarray]:
         "unit_target": _bool_arr(mask_json.get("unitTargetMask", [False] * MAX_ENTITIES)),
         "unit_subaction": _bool_arr(mask_json.get("unitSubactionMask", [])),
         "city_target": _bool_arr(mask_json.get("cityTargetMask", [False] * MAX_ENTITIES)),
+        "city_subaction": _bool_arr(mask_json.get("citySubactionMask", [])),
         "tech_target": _bool_arr(mask_json.get("techTargetMask", [])),
         "diplomacy_target": _bool_arr(mask_json.get("diplomacyTargetMask", [])),
         "diplomacy_subaction": _bool_arr(mask_json.get("diplomacySubactionMask", [])),
@@ -111,6 +112,11 @@ def _parse_scalars(scalars_json: dict[str, Any]) -> np.ndarray:
      11  policyProgressCurrent
      12  warStateFlags
      13  victoryProgress
+     14  isInGoldenAge
+     15  goldenAgeTurnsRemaining
+     16  eraIndex
+     17  freePolicies
+     18  currentTechIndex
     """
     arr = np.array(
         [
@@ -128,6 +134,11 @@ def _parse_scalars(scalars_json: dict[str, Any]) -> np.ndarray:
             float(scalars_json.get("policyProgressCurrent", 0.0)),
             float(scalars_json.get("warStateFlags", 0)),
             float(scalars_json.get("victoryProgress", 0.0)),
+            float(scalars_json.get("isInGoldenAge", 0)),
+            float(scalars_json.get("goldenAgeTurnsRemaining", 0)),
+            float(scalars_json.get("eraIndex", 0)),
+            float(scalars_json.get("freePolicies", 0)),
+            float(scalars_json.get("currentTechIndex", -1)),
         ],
         dtype=np.float32,
     )

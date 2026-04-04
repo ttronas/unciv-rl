@@ -20,17 +20,17 @@ import kotlin.math.roundToInt
 const val MAX_ENTITIES = 512
 
 /** Number of float features encoded per entity. */
-const val ENTITY_FEATURES = 25
+const val ENTITY_FEATURES = 28
 
 /** Number of spatial map channels. */
-const val N_MAP_CHANNELS = 11
+const val N_MAP_CHANNELS = 13
 
 // ---------------------------------------------------------------------------
 // Serializable data classes
 // ---------------------------------------------------------------------------
 
 /**
- * The 14 scalar game-state features for the current agent's civilisation.
+ * The 19 scalar game-state features for the current agent's civilisation.
  */
 @Serializable
 data class ScalarObservation(
@@ -73,7 +73,20 @@ data class ScalarObservation(
      * Overall victory progress [0..1]: fraction of the most-advanced victory milestone
      * that the agent has completed.
      */
-    val victoryProgress: Float
+    val victoryProgress: Float,
+    /** 1 if the civilisation is currently in a golden age, 0 otherwise. */
+    val isInGoldenAge: Int,
+    /** Number of turns remaining in the current golden age (0 if not in one). */
+    val goldenAgeTurnsRemaining: Int,
+    /** Era number of the civilisation (0 = Ancient, 1 = Classical, …). */
+    val eraIndex: Int,
+    /** Number of free social-policy slots available to adopt this turn. */
+    val freePolicies: Int,
+    /**
+     * Index of the technology currently being researched in the sorted tech list
+     * ([RLCatalogues.techNames]). −1 if no technology is queued.
+     */
+    val currentTechIndex: Int
 )
 
 /**
@@ -106,6 +119,9 @@ data class ScalarObservation(
  * 22  city_defenses        city defence HP (0 for units)
  * 23  founded_turn         game turn the city was founded (0 for units)
  * 24  last_action_turn     last turn the entity performed an action (placeholder, 0 for now)
+ * 25  promotions_count     number of promotions taken by the unit (0 for cities)
+ * 26  food_stock           food stored toward next population growth (0 for units)
+ * 27  food_needed          food required for next population growth (0 for units)
  */
 @Serializable
 data class EntityObservation(
@@ -128,6 +144,8 @@ data class EntityObservation(
  *  8  improvement    index into [RLObservationResponse.improvementTypes]
  *  9  zoc            1 if this tile is inside an enemy zone of control
  * 10  threat_level   integer threat estimate (0–4)
+ * 11  enemy_unit     1 if a visible enemy unit is present on this tile
+ * 12  own_territory  1 if this tile is owned by the observing civilisation
  */
 @Serializable
 data class MapPlanes(
@@ -274,7 +292,13 @@ fun buildObservation(
         techProgressCurrent = techProgress.coerceIn(0f, 1f),
         policyProgressCurrent = policyProgress.coerceIn(0f, 1f),
         warStateFlags = warFlags,
-        victoryProgress = victoryProgress.coerceIn(0f, 1f)
+        victoryProgress = victoryProgress.coerceIn(0f, 1f),
+        isInGoldenAge = if (civ.goldenAges.isGoldenAge()) 1 else 0,
+        goldenAgeTurnsRemaining = civ.goldenAges.turnsLeftForCurrentGoldenAge,
+        eraIndex = civ.getEraNumber(),
+        freePolicies = civ.policies.freePolicies,
+        currentTechIndex = civ.tech.currentTechnologyName()
+            ?.let { name -> techList.indexOf(name).let { if (it < 0) -1 else it } } ?: -1
     )
 
     // ---- entities ---------------------------------------------------------
@@ -404,7 +428,10 @@ private fun encodeUnit(
         roadLevel,                                            // 21 road_level
         0,                                                    // 22 city_defenses
         0,                                                    // 23 founded_turn
-        0                                                     // 24 last_action_turn
+        0,                                                    // 24 last_action_turn
+        unit.promotions.numberOfPromotions,                   // 25 promotions_count
+        0,                                                    // 26 food_stock
+        0                                                     // 27 food_needed
     )
     return EntityObservation(features = features)
 }
@@ -469,7 +496,10 @@ private fun encodeCity(
         roadLevel,                                      // 21 road_level
         city.health,                                    // 22 city_defenses
         city.turnAcquired,                              // 23 founded_turn
-        0                                               // 24 last_action_turn
+        0,                                              // 24 last_action_turn
+        0,                                              // 25 promotions_count
+        city.population.foodStored,                     // 26 food_stock
+        city.population.getFoodToNextPopulation()       // 27 food_needed
     )
     return EntityObservation(features = features)
 }
@@ -552,6 +582,19 @@ private fun buildMapPlanes(
         data[8 * tileCount + i] = improvIdx
         data[9 * tileCount + i] = zoc
         data[10 * tileCount + i] = threat
+
+        // Channel 11: enemy_unit – 1 if a visible enemy unit is on this tile
+        val enemyUnit = if (visible) {
+            if (tile.getUnits().any { u ->
+                val dm = observer.getDiplomacyManager(u.civ)
+                dm?.diplomaticStatus == DiplomaticStatus.War
+            }) 1 else 0
+        } else 0
+        data[11 * tileCount + i] = enemyUnit
+
+        // Channel 12: own_territory – 1 if tile is owned by the observing civ
+        val ownTerritory = if (tile.getOwner() == observer) 1 else 0
+        data[12 * tileCount + i] = ownTerritory
     }
 
     return MapPlanes(
