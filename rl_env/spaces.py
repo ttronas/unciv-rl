@@ -14,10 +14,7 @@ from gymnasium import spaces
 from rl_env.constants import (
     ENTITY_FEATURES,
     MAX_ENTITIES,
-    MAX_ARG1,
-    MAX_ARG2,
     MAX_SUBACTIONS,
-    MAX_TARGETS,
     N_MAP_CHANNELS,
     N_MACRO_ACTIONS,
     N_SCALAR_FEATURES,
@@ -78,7 +75,9 @@ class UncivSpaces:
             ``MultiBinary(MAX_ENTITIES)`` – 1 for real entities, 0 for padding.
         action_mask:
             A nested ``Dict`` with the same sub-keys as the action space
-            (``macro``, ``target``, ``subaction``, ``arg1``, ``arg2``),
+            (``macro``, ``unit_target``, ``unit_subaction``, ``city_target``,
+            ``tech_target``, ``diplomacy_target``, ``diplomacy_subaction``,
+            ``policy_target``, ``settler_target``, ``production_items``),
             each being a ``MultiBinary`` mask over valid indices.
         """
         return spaces.Dict(
@@ -115,27 +114,49 @@ class UncivSpaces:
         Returns a :class:`gymnasium.spaces.Dict` describing a single step's
         action.
 
+        The keys deliberately match those of :meth:`action_mask_space` so that
+        ``action_space.sample(obs["action_mask"])`` works out of the box in any
+        training framework.
+
         Keys
         ----
         macro:
             ``Discrete(N_MACRO_ACTIONS)`` – which top-level action category.
-        target:
-            ``Discrete(MAX_TARGETS)`` – which entity / tech / civ is targeted.
-        subaction:
-            ``Discrete(MAX_SUBACTIONS)`` – sub-action type within the macro.
-        arg1:
-            ``Discrete(MAX_ARG1)`` – first argument (e.g. move destination,
-            promotion index, production item index).
-        arg2:
-            ``Discrete(MAX_ARG2)`` – second argument (e.g. improvement type).
+        unit_target:
+            ``Discrete(MAX_ENTITIES)`` – which unit entity to act on.
+        unit_subaction:
+            ``Discrete(MAX_SUBACTIONS)`` – sub-action type for unit commands
+            (move, attack, fortify, …).
+        city_target:
+            ``Discrete(MAX_ENTITIES)`` – which city entity to act on.
+        tech_target:
+            ``Discrete(num_techs)`` – which technology to research.
+        diplomacy_target:
+            ``Discrete(num_agents)`` – which civilisation to interact with.
+        diplomacy_subaction:
+            ``Discrete(3)`` – diplomacy sub-action (declare war / offer peace /
+            open borders).
+        policy_target:
+            ``Discrete(num_policies)`` – which social policy to adopt.
+        settler_target:
+            ``Discrete(MAX_ENTITIES)`` – which settler unit to use for city
+            founding.
+        production_items:
+            ``Discrete(num_production_items)`` – which item to build in the
+            selected city.
         """
         return spaces.Dict(
             {
                 "macro": spaces.Discrete(N_MACRO_ACTIONS),
-                "target": spaces.Discrete(MAX_TARGETS),
-                "subaction": spaces.Discrete(MAX_SUBACTIONS),
-                "arg1": spaces.Discrete(MAX_ARG1),
-                "arg2": spaces.Discrete(MAX_ARG2),
+                "unit_target": spaces.Discrete(MAX_ENTITIES),
+                "unit_subaction": spaces.Discrete(MAX_SUBACTIONS),
+                "city_target": spaces.Discrete(MAX_ENTITIES),
+                "tech_target": spaces.Discrete(self.num_techs),
+                "diplomacy_target": spaces.Discrete(self.num_agents),
+                "diplomacy_subaction": spaces.Discrete(3),
+                "policy_target": spaces.Discrete(self.num_policies),
+                "settler_target": spaces.Discrete(MAX_ENTITIES),
+                "production_items": spaces.Discrete(self.num_production_items),
             }
         )
 
