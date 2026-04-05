@@ -5,10 +5,14 @@ on:
   pull_request:
 
 jobs:
-  rl-integration-test:
-    name: RL integration tests (live server + RLlib agents)
+  # ---------------------------------------------------------------------------
+  # Job 1: build the server JAR once and share it with all test jobs via
+  # GitHub Actions artifact storage.  No Python or RL library needed here.
+  # ---------------------------------------------------------------------------
+  build-server-jar:
+    name: Build server JAR
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # budget cap; server build + 1 PPO iteration + env steps fits comfortably within this
+    timeout-minutes: 20
     permissions:
       contents: read
     env:
@@ -37,26 +41,33 @@ jobs:
       - name: Build server JAR
         run: ./gradlew server:dist
 
-      - name: Start RL server
-        working-directory: android/assets
-        run: |
-          java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8080 &
-          echo $! > /tmp/server.pid
-          echo "Server PID: $(cat /tmp/server.pid)"
+      - name: Upload server JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unciv-server-jar
+          path: server/build/libs/UncivServer.jar
+          retention-days: 1
 
-      - name: Wait for server to be ready
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/isalive > /dev/null; then
-              echo "Server is ready after $i attempts"
-              exit 0
-            fi
-            echo "Waiting for server... ($i/30)"
-            sleep 2
-          done
-          echo "Server did not become ready in time – dumping last lines of process output"
-          kill $(cat /tmp/server.pid) 2>/dev/null || true
-          exit 1
+  # ---------------------------------------------------------------------------
+  # Job 2: base environment + server-communication tests.
+  # Minimal Python install – no RL library packages required.
+  # ---------------------------------------------------------------------------
+  test-base-env:
+    name: Base env & server communication tests
+    needs: [build-server-jar]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Start RL server
+        uses: ./.github/actions/start-rl-server
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -64,13 +75,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: |
-          pip install pettingzoo gymnasium numpy requests pytest
-          # CPU-only torch keeps the download small; required for the
-          # action-masking RLlib module tests (TestActionMaskingRLModule
-          # and TestRLlibTraining).
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install "ray[rllib]"
+        run: pip install pettingzoo gymnasium numpy requests pytest
 
       - name: Run env unit tests (obs parser, action mapper, spaces)
         env:
@@ -83,6 +88,48 @@ jobs:
           UNCIV_RL_URL: http://localhost:8080
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest rl_env/tests/test_server_communication.py -v
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f /tmp/server.pid ]; then
+            kill $(cat /tmp/server.pid) 2>/dev/null || true
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Job 3: RLlib integration tests (PPO, action masking, macro wrapper).
+  # Isolated Python environment – ray + torch only, no conflict with other libs.
+  # To add a new RL library, copy this job, change the install step and the
+  # pytest target.  The composite action handles the server setup identically.
+  # ---------------------------------------------------------------------------
+  test-rllib:
+    name: RLlib integration tests (live server)
+    needs: [build-server-jar]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Start RL server
+        uses: ./.github/actions/start-rl-server
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install pettingzoo gymnasium numpy requests pytest
+          # CPU-only torch keeps the download small (~250 MB vs ~2 GB for CUDA)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "ray[rllib]"
 
       - name: Run RLlib integration tests (PPO + action masking + live server)
         env:

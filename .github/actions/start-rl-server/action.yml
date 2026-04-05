@@ -1,0 +1,54 @@
+name: Start RL Server
+description: >
+  Downloads the pre-built UncivServer JAR artifact, sets up JDK 17, starts the
+  server with the --rl flag, and waits until it is ready to accept requests.
+  Call this from any RL-library integration-test job that needs a live server.
+
+inputs:
+  jar-artifact-name:
+    description: Name of the GitHub Actions artifact that contains UncivServer.jar
+    required: false
+    default: unciv-server-jar
+  server-port:
+    description: Port to bind the server on
+    required: false
+    default: '8080'
+
+runs:
+  using: composite
+  steps:
+    - name: Download server JAR
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.jar-artifact-name }}
+        path: server/build/libs
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v5
+      with:
+        java-version: '17'
+        distribution: temurin
+
+    - name: Start RL server
+      shell: bash
+      working-directory: android/assets
+      run: |
+        java -jar ../../server/build/libs/UncivServer.jar \
+          --rl -no-auth -no-chat -p ${{ inputs.server-port }} &
+        echo $! > /tmp/server.pid
+        echo "Server PID: $(cat /tmp/server.pid)"
+
+    - name: Wait for server to be ready
+      shell: bash
+      run: |
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:${{ inputs.server-port }}/isalive > /dev/null; then
+            echo "Server is ready after $i attempts"
+            exit 0
+          fi
+          echo "Waiting for server... ($i/30)"
+          sleep 2
+        done
+        echo "Server did not become ready in time"
+        kill $(cat /tmp/server.pid) 2>/dev/null || true
+        exit 1
