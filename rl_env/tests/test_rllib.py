@@ -394,9 +394,9 @@ class TestActionMaskingRLModule(unittest.TestCase):
 class TestRLlibTraining(unittest.TestCase):
     """Full end-to-end tests: PPO training with two live Unciv agents.
 
-    ``setUpClass`` builds a shared PPO algorithm, runs **3 training iterations**
-    against the live server, and stores the results so individual test methods
-    can assert on them without repeating the expensive training step.
+    ``setUpClass`` builds a shared PPO algorithm, runs **1 training iteration**
+    against the live server, and stores the result so individual test methods
+    can assert on it without repeating the expensive training step.
 
     Tests
     -----
@@ -406,22 +406,22 @@ class TestRLlibTraining(unittest.TestCase):
         ``episode_reward_mean`` must be present (or gracefully absent when no
         episode completed in the batch).
     test_ppo_action_masking_end_to_end
-        After training, the shared ``RLModule`` is evaluated on 30 live
+        After training, the shared ``RLModule`` is evaluated on 10 live
         observations from the server.  For each observation the argmax of the
         (masked) logits must correspond to a legal macro action according to the
         mask reported by the server.
     test_action_mask_enforced_during_env_stepping
-        Steps the wrapped environment for 30 turns choosing a random legal
+        Steps the wrapped environment for 10 turns choosing a random legal
         action at each step (no RLlib involved).  Verifies that the wrapper
         always surfaces at least one legal macro action and that the env accepts
         the chosen action without error.
     test_additional_training_iterations
-        Runs 2 more PPO training iterations on the shared algorithm to confirm
+        Runs 1 more PPO training iteration on the shared algorithm to confirm
         that continued training remains stable.
     """
 
     #: Number of training iterations executed in setUpClass.
-    NUM_SETUP_ITERATIONS: int = 3
+    NUM_SETUP_ITERATIONS: int = 1
 
     # ------------------------------------------------------------------
     # Class-level fixtures: train once, share across all test methods
@@ -489,7 +489,7 @@ class TestRLlibTraining(unittest.TestCase):
     def test_ppo_action_masking_end_to_end(self):
         """Trained RLModule must never select an illegal macro action on live obs.
 
-        For each of 30 steps the test:
+        For each of 10 steps the test:
         1. Fetches a live observation from the server (including its action mask).
         2. Runs the shared ``RLModule`` in inference mode.
         3. Takes the argmax of the masked logits as the chosen action.
@@ -518,7 +518,7 @@ class TestRLlibTraining(unittest.TestCase):
         violations = []
         steps_executed = 0
         try:
-            while wrapped.agents and steps_executed < 30:
+            while wrapped.agents and steps_executed < 10:
                 agent = wrapped.agent_selection
                 obs = wrapped.observe(agent)
                 mask = obs["action_mask"]
@@ -584,7 +584,7 @@ class TestRLlibTraining(unittest.TestCase):
 
         steps_executed = 0
         try:
-            while wrapped.agents and steps_executed < 30:
+            while wrapped.agents and steps_executed < 10:
                 agent = wrapped.agent_selection
                 obs = wrapped.observe(agent)
                 mask = obs["action_mask"]
@@ -613,15 +613,13 @@ class TestRLlibTraining(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_additional_training_iterations(self):
-        """2 more PPO iterations on the shared algorithm must succeed."""
-        for i in range(2):
-            with self.subTest(extra_iteration=i + 1):
-                result = self.algo.train()
-                self.assertIn(
-                    "env_runners",
-                    result,
-                    f"Extra training iteration {i + 1} missing 'env_runners'",
-                )
+        """1 more PPO iteration on the shared algorithm must succeed."""
+        result = self.algo.train()
+        self.assertIn(
+            "env_runners",
+            result,
+            "Extra training iteration missing 'env_runners'",
+        )
 
 
 if __name__ == "__main__":

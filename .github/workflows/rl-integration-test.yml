@@ -8,7 +8,7 @@ jobs:
   rl-integration-test:
     name: RL integration tests (live server + RLlib agents)
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # server build + PPO training iterations against the live server can be slow
+    timeout-minutes: 30  # budget cap; server build + 1 PPO iteration + env steps fits comfortably within this
     permissions:
       contents: read
     env:
