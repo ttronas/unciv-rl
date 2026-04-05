@@ -20,6 +20,11 @@ underlying :class:`~rl_env.UncivEnv`; all remaining sub-action fields
 
 The wrapper preserves the PettingZoo AEC API so the underlying environment
 can still be tested with ``pettingzoo.test.api_test``.
+
+:class:`UncivMultiAgentEnv` bridges the AEC environment to RLlib's
+``MultiAgentEnv`` interface *without* an ``aec_to_parallel`` conversion,
+preserving the turn-based semantics: only the currently active agent is
+asked for an action on each step.
 """
 
 from __future__ import annotations
@@ -163,3 +168,117 @@ class UncivMacroWrapper(BaseWrapper):
         macro_mask = np.asarray(raw_macro, dtype=np.float32)
 
         return {"observations": flat_obs, "action_mask": macro_mask}
+
+
+# ---------------------------------------------------------------------------
+# RLlib MultiAgentEnv adapter (no aec_to_parallel needed)
+# ---------------------------------------------------------------------------
+
+try:
+    from ray.rllib.env import MultiAgentEnv as _MultiAgentEnv
+    _HAS_RLLIB = True
+except ImportError:  # pragma: no cover
+    _MultiAgentEnv = object  # type: ignore[assignment,misc]
+    _HAS_RLLIB = False
+
+
+class UncivMultiAgentEnv(_MultiAgentEnv):
+    """RLlib ``MultiAgentEnv`` wrapping :class:`UncivMacroWrapper` (PettingZoo AEC).
+
+    Bridges the turn-based AEC environment to RLlib **without** an
+    ``aec_to_parallel`` conversion.  On each :meth:`step` only the currently
+    active agent is asked for an action; all other agents remain idle until
+    it is their turn.
+
+    Parameters (passed as a ``config`` dict)
+    -----------------------------------------
+    base_url : str
+        URL of the running Unciv RL server (default ``"http://localhost:8080"``).
+    num_agents : int
+        Number of RL-controlled civilisations (default ``2``).
+    num_ai : int
+        Number of AI-controlled civilisations (default ``0``).
+    include_map_planes : bool
+        Whether to include spatial map channels in observations (default ``False``).
+    """
+
+    def __init__(self, config=None) -> None:
+        super().__init__()
+        config = config or {}
+
+        from rl_env import UncivEnv  # local import to avoid circular deps
+
+        include_map_planes: bool = config.get("include_map_planes", False)
+        num_agents: int = config.get("num_agents", 2)
+
+        aec_env = UncivEnv(
+            base_url=config.get("base_url", "http://localhost:8080"),
+            num_agents=num_agents,
+            num_ai=config.get("num_ai", 0),
+            num_city_states=0,
+            no_barbarians=True,
+            include_map_planes=include_map_planes,
+        )
+        self._aec = UncivMacroWrapper(aec_env, include_map_planes=include_map_planes)
+
+        # RLlib requires _agent_ids to be set before reset().
+        self._agent_ids = {f"player_{i}" for i in range(num_agents)}
+
+        # Spaces are constant for all agents (built in UncivMacroWrapper.__init__).
+        self.observation_space = self._aec.observation_space("player_0")
+        self.action_space = self._aec.action_space("player_0")
+
+        # Baseline for per-step reward computation (updated on reset/step).
+        self._last_cum_rewards: dict = {}
+
+    # ------------------------------------------------------------------
+    # MultiAgentEnv API
+    # ------------------------------------------------------------------
+
+    def reset(self, *, seed=None, options=None):
+        obs_all, infos_all = self._aec.reset(seed=seed, options=options)
+        self._agent_ids = set(self._aec.possible_agents)
+
+        # Initialise cumulative-reward baseline for the new episode.
+        self._last_cum_rewards = {a: 0.0 for a in self._aec.possible_agents}
+
+        agent = self._aec.agent_selection
+        return {agent: obs_all[agent]}, {agent: infos_all.get(agent, {})}
+
+    def step(self, action_dict):
+        agent = self._aec.agent_selection
+        action = action_dict.get(agent)
+
+        self._aec.step(action)
+
+        # UncivEnv accumulates rewards into _cumulative_rewards and then
+        # zeroes rewards[agent] at the end of step().  Read the delta from
+        # the underlying UncivEnv instance (self._aec.env) to get the actual
+        # per-step reward without going through BaseWrapper's private-attr guard.
+        unciv_env = self._aec.env
+        new_cum: dict = unciv_env._cumulative_rewards
+        step_reward = new_cum.get(agent, 0.0) - self._last_cum_rewards.get(agent, 0.0)
+        self._last_cum_rewards = dict(new_cum)
+
+        all_done = len(self._aec.agents) == 0
+        terminateds = {
+            agent: self._aec.terminations.get(agent, False),
+            "__all__": all_done,
+        }
+        truncateds = {
+            agent: self._aec.truncations.get(agent, False),
+            "__all__": False,
+        }
+        rewards = {agent: step_reward}
+
+        obs: dict = {}
+        infos: dict = {}
+        if self._aec.agents:
+            next_agent = self._aec.agent_selection
+            obs[next_agent] = self._aec.observe(next_agent)
+            infos[next_agent] = self._aec.infos.get(next_agent, {})
+
+        return obs, rewards, terminateds, truncateds, infos
+
+    def close(self) -> None:
+        self._aec.close()

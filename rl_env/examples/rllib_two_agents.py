@@ -60,12 +60,10 @@ try:
     from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
     from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
     from ray.rllib.core.rl_module.rl_module import RLModule, RLModuleSpec
-    from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
     from ray.rllib.utils.annotations import override
     from ray.rllib.utils.framework import try_import_torch
     from ray.rllib.utils.torch_utils import FLOAT_MIN
     from ray.rllib.utils.typing import TensorType
-    from pettingzoo.utils.conversions import aec_to_parallel
 
     _torch, _nn = try_import_torch()
     _HAS_RAY = True
@@ -75,9 +73,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Env / wrapper imports
 # ---------------------------------------------------------------------------
-from rl_env import UncivEnv
 from rl_env.constants import N_MACRO_ACTIONS
-from rl_env.wrappers import UncivMacroWrapper
 
 # ---------------------------------------------------------------------------
 # Environment name used for tune.register_env
@@ -219,12 +215,12 @@ if _HAS_RAY:
 # Environment factory
 # ---------------------------------------------------------------------------
 
-def make_unciv_env(config: dict) -> "PettingZooEnv":
+def make_unciv_env(config: dict) -> "UncivMultiAgentEnv":
     """Factory function registered with ``tune.register_env``.
 
-    Creates::
-
-        UncivEnv  →  UncivMacroWrapper  →  aec_to_parallel  →  PettingZooEnv
+    Creates a :class:`~rl_env.wrappers.UncivMultiAgentEnv` that wraps the
+    AEC environment directly, without any ``aec_to_parallel`` conversion.
+    The environment is turn-based: only the active agent is queried per step.
 
     Parameters
     ----------
@@ -235,24 +231,9 @@ def make_unciv_env(config: dict) -> "PettingZooEnv":
         * ``num_agents`` – number of RL agents (default: ``2``)
         * ``num_ai`` – number of AI agents (default: ``0``)
         * ``include_map_planes`` – whether to include map planes (default: ``False``)
-        * ``seed`` – optional random seed
     """
-    base_url = config.get("base_url", "http://localhost:8080")
-    num_agents = config.get("num_agents", 2)
-    num_ai = config.get("num_ai", 0)
-    include_map_planes = config.get("include_map_planes", False)
-
-    aec_env = UncivEnv(
-        base_url=base_url,
-        num_agents=num_agents,
-        num_ai=num_ai,
-        num_city_states=0,
-        no_barbarians=True,
-        include_map_planes=include_map_planes,
-    )
-    wrapped = UncivMacroWrapper(aec_env, include_map_planes=include_map_planes)
-    parallel = aec_to_parallel(wrapped)
-    return PettingZooEnv(parallel)
+    from rl_env.wrappers import UncivMultiAgentEnv  # imported here to avoid circular deps
+    return UncivMultiAgentEnv(config)
 
 
 # ---------------------------------------------------------------------------
