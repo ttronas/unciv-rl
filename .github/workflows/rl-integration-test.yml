@@ -145,3 +145,49 @@ jobs:
           if [ -f /tmp/server.pid ]; then
             kill $(cat /tmp/server.pid) 2>/dev/null || true
           fi
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Stable-Baselines3 / sb3-contrib (MaskablePPO) integration tests.
+  # Isolated Python environment – sb3-contrib + stable-baselines3 only.
+  # ---------------------------------------------------------------------------
+  test-stable-baselines3:
+    name: MaskablePPO (sb3-contrib) integration tests (live server)
+    needs: [build-server-jar]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Start RL server
+        uses: ./.github/actions/start-rl-server
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install pettingzoo gymnasium numpy requests pytest
+          pip install stable-baselines3 sb3-contrib
+
+      - name: Run MaskablePPO integration tests (live server)
+        env:
+          UNCIV_RL_URL: http://localhost:8080
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest rl_env/tests/test_sb3.py -v \
+            -k "TestUncivSB3Wrapper or TestMaskablePPOSetup or TestMaskablePPOTraining"
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f /tmp/server.pid ]; then
+            kill $(cat /tmp/server.pid) 2>/dev/null || true
+          fi
