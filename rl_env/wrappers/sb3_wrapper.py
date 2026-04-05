@@ -175,6 +175,23 @@ def _make_maskable_vec_env_wrapper(venv, par_env):
         def step_wait(self):
             return self.venv.step_wait()
 
+        def seed(self, seed=None):
+            # supersuit's ConcatVecEnv does not implement seed(); the Unciv
+            # server's randomness is controlled via reset(seed=…) instead.
+            return [None] * self.num_envs
+
+        def get_attr(self, attr_name, indices=None):
+            # supersuit's ConcatVecEnv does not implement get_attr(); SB3's
+            # VecEnv.__init__ calls get_attr("render_mode") to detect it.
+            if attr_name == "render_mode":
+                return [None] * self.num_envs
+            try:
+                return self.venv.get_attr(attr_name, indices)
+            except AttributeError:
+                raise AttributeError(
+                    f"Attribute {attr_name!r} is not supported by the environment"
+                )
+
         def has_attr(self, attr_name, indices=None):
             if attr_name == "action_masks":
                 return True
