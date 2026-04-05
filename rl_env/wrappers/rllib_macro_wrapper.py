@@ -221,15 +221,32 @@ class UncivMultiAgentEnv(_MultiAgentEnv):
         )
         self._aec = UncivMacroWrapper(aec_env, include_map_planes=include_map_planes)
 
-        # RLlib requires _agent_ids to be set before reset().
-        self._agent_ids = {f"player_{i}" for i in range(num_agents)}
+        # possible_agents and _agent_ids must be set before reset().
+        self.possible_agents = [f"player_{i}" for i in range(num_agents)]
+        self._agent_ids = set(self.possible_agents)
 
-        # Spaces are constant for all agents (built in UncivMacroWrapper.__init__).
-        self.observation_space = self._aec.observation_space("player_0")
-        self.action_space = self._aec.action_space("player_0")
+        # Pre-build per-agent space dicts.  UncivMacroWrapper builds its spaces
+        # in __init__ (no server call needed), so this is safe before reset().
+        _obs_space = self._aec.observation_space("player_0")
+        _act_space = self._aec.action_space("player_0")
+        # RLlib's SyncVectorMultiAgentEnv checks for action_spaces (dict, plural)
+        # first; providing the dict avoids it falling back to dict(action_space)
+        # which fails on a Gymnasium Discrete object.
+        self.observation_spaces = {a: _obs_space for a in self.possible_agents}
+        self.action_spaces = {a: _act_space for a in self.possible_agents}
 
         # Baseline for per-step reward computation (updated on reset/step).
         self._last_cum_rewards: dict = {}
+
+    # ------------------------------------------------------------------
+    # Space accessors required by RLlib's MultiAgentEnv contract
+    # ------------------------------------------------------------------
+
+    def get_observation_space(self, agent_id: str):
+        return self._aec.observation_space(agent_id)
+
+    def get_action_space(self, agent_id: str):
+        return self._aec.action_space(agent_id)
 
     # ------------------------------------------------------------------
     # MultiAgentEnv API
@@ -237,7 +254,8 @@ class UncivMultiAgentEnv(_MultiAgentEnv):
 
     def reset(self, *, seed=None, options=None):
         obs_all, infos_all = self._aec.reset(seed=seed, options=options)
-        self._agent_ids = set(self._aec.possible_agents)
+        self.possible_agents = list(self._aec.possible_agents)
+        self._agent_ids = set(self.possible_agents)
 
         # Initialise cumulative-reward baseline for the new episode.
         self._last_cum_rewards = {a: 0.0 for a in self._aec.possible_agents}
