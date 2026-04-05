@@ -316,6 +316,10 @@ def build_ppo_config(
                 }
             )
         )
+        # Replace the deprecated UnifiedLogger (removed in Ray 2.7) with a
+        # no-op logger.  Training results are returned directly from
+        # algo.train(); file-based logging is not needed for correctness.
+        .debugging(logger_config={"type": "ray.tune.logger.NoopLogger"})
     )
     return config
 
@@ -364,7 +368,12 @@ if __name__ == "__main__":
     if not _HAS_RAY:
         raise SystemExit("ray[rllib] and torch are required. Install with: pip install 'ray[rllib]' torch")
 
+    import os
     args = _parse_args()
+
+    # Opt in to the future Ray default: do not override accelerator env vars
+    # when num_gpus=0 (silences FutureWarning from ray._private.worker).
+    os.environ.setdefault("RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO", "0")
 
     ray.init(ignore_reinit_error=True)
 

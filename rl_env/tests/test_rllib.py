@@ -429,8 +429,13 @@ class TestRLlibTraining(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        import os
         import ray
         from rl_env.examples.rllib_two_agents import build_ppo_config
+
+        # Opt in to the future Ray default: do not override accelerator env vars
+        # when num_gpus=0 (silences FutureWarning from ray._private.worker).
+        os.environ.setdefault("RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO", "0")
 
         ray.init(ignore_reinit_error=True, num_cpus=2, log_to_driver=False)
 
