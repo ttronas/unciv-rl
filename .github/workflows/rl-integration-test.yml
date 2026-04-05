@@ -60,7 +60,12 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pettingzoo gymnasium numpy requests pytest
+        run: |
+          pip install pettingzoo gymnasium numpy requests pytest
+          # CPU-only torch keeps the download small; needed for TestActionMaskingRLModule
+          # and TestRLlibTraining (both auto-skip gracefully if ray is absent).
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "ray[rllib]"
 
       - name: Run integration tests
         env:

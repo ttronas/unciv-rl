@@ -1,0 +1,78 @@
+name: RL Python Unit Tests
+
+# Runs the pure Python unit tests on every push and pull request.
+# No JDK or server build is required, so this job gives fast feedback.
+#
+# Three test groups are covered:
+#   1. Core env unit tests (test_env.py) – obs parser, action mapper, spaces
+#   2. Wrapper unit tests (test_rllib.py::TestUncivMacroWrapper) – no server, no ray
+#   3. RLlib module unit tests (test_rllib.py::TestActionMaskingRLModule) – need ray + torch
+#
+# Integration tests (server-backed) are handled by rl-integration-test.yml.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: fast unit tests – no server, no ray needed
+  # -------------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests (no server)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pettingzoo gymnasium numpy requests pytest
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest rl_env/tests/ -v \
+            --ignore=rl_env/tests/test_server_communication.py
+
+  # -------------------------------------------------------------------------
+  # Job 2: RLlib module unit tests – need torch + ray, still no server
+  # -------------------------------------------------------------------------
+  rllib-unit-tests:
+    name: RLlib unit tests (no server)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pettingzoo gymnasium numpy requests pytest
+          # CPU-only torch keeps the download small (~250 MB vs ~2 GB for CUDA)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "ray[rllib]"
+
+      - name: Run RLlib unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest rl_env/tests/test_rllib.py -v \
+            -k "TestActionMaskingRLModule or TestUncivMacroWrapper"

@@ -350,7 +350,7 @@ class TestActionMaskingRLModule(unittest.TestCase):
         masked_logits = logits[:, [1, 2, 4, 5, 6, 7, 8, 9]]
         self.assertTrue(
             (masked_logits < -1e6).all().item(),
-            "Masked actions should have near-−inf logits",
+            "Masked actions should have near--inf logits",
         )
         # Allowed actions should have finite logits
         allowed_logits = logits[:, [0, 3]]
