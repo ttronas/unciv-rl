@@ -6,7 +6,11 @@ on:
 
 jobs:
   rl-integration-test:
+    name: RL integration tests (live server + RLlib agents)
     runs-on: ubuntu-latest
+    timeout-minutes: 90  # server build + PPO training iterations against the live server can be slow
+    permissions:
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -62,16 +66,31 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install pettingzoo gymnasium numpy requests pytest
-          # CPU-only torch keeps the download small; needed for TestActionMaskingRLModule
-          # and TestRLlibTraining (both auto-skip gracefully if ray is absent).
+          # CPU-only torch keeps the download small; required for the
+          # action-masking RLlib module tests (TestActionMaskingRLModule
+          # and TestRLlibTraining).
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install "ray[rllib]"
 
-      - name: Run integration tests
+      - name: Run env unit tests (obs parser, action mapper, spaces)
         env:
           UNCIV_RL_URL: http://localhost:8080
           PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest rl_env/tests/ -v
+        run: python -m pytest rl_env/tests/test_env.py -v
+
+      - name: Run server communication tests
+        env:
+          UNCIV_RL_URL: http://localhost:8080
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest rl_env/tests/test_server_communication.py -v
+
+      - name: Run RLlib integration tests (PPO + action masking + live server)
+        env:
+          UNCIV_RL_URL: http://localhost:8080
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest rl_env/tests/test_rllib.py -v \
+            -k "TestRLlibTraining or TestActionMaskingRLModule or TestUncivMacroWrapper"
 
       - name: Stop server
         if: always()

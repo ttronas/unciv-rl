@@ -350,7 +350,7 @@ class TestActionMaskingRLModule(unittest.TestCase):
         masked_logits = logits[:, [1, 2, 4, 5, 6, 7, 8, 9]]
         self.assertTrue(
             (masked_logits < -1e6).all().item(),
-            "Masked actions should have near--inf logits",
+            "Masked actions should have near-inf logits",
         )
         # Allowed actions should have finite logits
         allowed_logits = logits[:, [0, 3]]
@@ -392,20 +392,47 @@ class TestActionMaskingRLModule(unittest.TestCase):
     "set UNCIV_RL_URL and ensure the server is running with --rl",
 )
 class TestRLlibTraining(unittest.TestCase):
-    """End-to-end test: one PPO training iteration with two agents."""
+    """Full end-to-end tests: PPO training with two live Unciv agents.
+
+    ``setUpClass`` builds a shared PPO algorithm, runs **3 training iterations**
+    against the live server, and stores the results so individual test methods
+    can assert on them without repeating the expensive training step.
+
+    Tests
+    -----
+    test_training_result_has_env_runners_key
+        The training result dict must contain the ``"env_runners"`` metrics block.
+    test_reward_metric_accessible
+        ``episode_reward_mean`` must be present (or gracefully absent when no
+        episode completed in the batch).
+    test_ppo_action_masking_end_to_end
+        After training, the shared ``RLModule`` is evaluated on 30 live
+        observations from the server.  For each observation the argmax of the
+        (masked) logits must correspond to a legal macro action according to the
+        mask reported by the server.
+    test_action_mask_enforced_during_env_stepping
+        Steps the wrapped environment for 30 turns choosing a random legal
+        action at each step (no RLlib involved).  Verifies that the wrapper
+        always surfaces at least one legal macro action and that the env accepts
+        the chosen action without error.
+    test_additional_training_iterations
+        Runs 2 more PPO training iterations on the shared algorithm to confirm
+        that continued training remains stable.
+    """
+
+    #: Number of training iterations executed in setUpClass.
+    NUM_SETUP_ITERATIONS: int = 3
+
+    # ------------------------------------------------------------------
+    # Class-level fixtures: train once, share across all test methods
+    # ------------------------------------------------------------------
 
     @classmethod
     def setUpClass(cls) -> None:
         import ray
-        ray.init(ignore_reinit_error=True, num_cpus=2)
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        import ray
-        ray.shutdown()
-
-    def test_one_training_iteration(self):
         from rl_env.examples.rllib_two_agents import build_ppo_config
+
+        ray.init(ignore_reinit_error=True, num_cpus=2, log_to_driver=False)
 
         config = build_ppo_config(
             base_url=_SERVER_URL,
@@ -414,20 +441,68 @@ class TestRLlibTraining(unittest.TestCase):
             train_batch_size=200,
             include_map_planes=False,
         )
-        algo = config.build()
-        try:
-            result = algo.train()
-            # Verify the result dict contains expected top-level keys
-            self.assertIn("env_runners", result)
-        finally:
-            algo.stop()
+        cls.algo = config.build()
 
-    def test_action_mask_enforced_during_sampling(self):
-        """Sampled macro actions must always be in the legal set."""
-        from pettingzoo.utils.conversions import aec_to_parallel
-        from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
+        # Run NUM_SETUP_ITERATIONS training iterations so the policy has seen real server obs.
+        cls.train_results = [cls.algo.train() for _ in range(cls.NUM_SETUP_ITERATIONS)]
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        import ray
+        cls.algo.stop()
+        ray.shutdown()
+
+    # ------------------------------------------------------------------
+    # Training result structure
+    # ------------------------------------------------------------------
+
+    def test_training_result_has_env_runners_key(self):
+        """All 3 training results must include the env_runners metrics block."""
+        for i, result in enumerate(self.train_results):
+            with self.subTest(iteration=i + 1):
+                self.assertIn(
+                    "env_runners",
+                    result,
+                    f"Training iteration {i + 1}/{self.NUM_SETUP_ITERATIONS} result missing 'env_runners' key",
+                )
+
+    def test_reward_metric_accessible(self):
+        """episode_reward_mean must be reachable (may be NaN for long games)."""
+        for i, result in enumerate(self.train_results):
+            with self.subTest(iteration=i + 1):
+                env_runners = result.get("env_runners", {})
+                # The key is absent when no episode completed in the batch
+                # (Unciv games can last hundreds of turns).  We only check
+                # that accessing it doesn't raise.
+                reward = env_runners.get("episode_reward_mean", None)
+                if reward is not None:
+                    self.assertIsInstance(
+                        reward,
+                        (int, float),
+                        f"episode_reward_mean is not numeric: {reward!r}",
+                    )
+
+    # ------------------------------------------------------------------
+    # End-to-end action masking with the trained RLModule
+    # ------------------------------------------------------------------
+
+    def test_ppo_action_masking_end_to_end(self):
+        """Trained RLModule must never select an illegal macro action on live obs.
+
+        For each of 30 steps the test:
+        1. Fetches a live observation from the server (including its action mask).
+        2. Runs the shared ``RLModule`` in inference mode.
+        3. Takes the argmax of the masked logits as the chosen action.
+        4. Asserts the chosen action is legal according to the server mask.
+        5. Steps the environment with that action to advance the game state.
+        """
+        import torch
+        from ray.rllib.core.columns import Columns
         from rl_env import UncivEnv
         from rl_env.wrappers import UncivMacroWrapper
+
+        module = self.algo.get_module("shared_policy")
+        module.eval()
 
         aec_env = UncivEnv(
             base_url=_SERVER_URL,
@@ -440,19 +515,113 @@ class TestRLlibTraining(unittest.TestCase):
         wrapped = UncivMacroWrapper(aec_env, include_map_planes=False)
         wrapped.reset(seed=0)
 
-        # Run a few steps and assert every sampled action is legal
-        for _ in range(5):
-            agent = wrapped.agent_selection
-            obs = wrapped.observe(agent)
-            mask = obs["action_mask"]  # float32, shape (N_MACRO_ACTIONS,)
-            legal_actions = np.where(mask > 0.5)[0]
-            if len(legal_actions) == 0:
-                break
-            action = int(np.random.choice(legal_actions))
-            self.assertIn(action, legal_actions)
-            wrapped.step(action)
+        violations = []
+        steps_executed = 0
+        try:
+            while wrapped.agents and steps_executed < 30:
+                agent = wrapped.agent_selection
+                obs = wrapped.observe(agent)
+                mask = obs["action_mask"]
+                legal = np.where(mask > 0.5)[0]
+                if len(legal) == 0:
+                    break
 
-        wrapped.close()
+                # Use the trained RLModule for inference.
+                with torch.no_grad():
+                    batch = {
+                        Columns.OBS: {
+                            "observations": torch.tensor(
+                                obs["observations"]
+                            ).unsqueeze(0),
+                            "action_mask": torch.tensor(mask).unsqueeze(0),
+                        }
+                    }
+                    out = module._forward_inference(batch)
+                    logits = out[Columns.ACTION_DIST_INPUTS].squeeze(0)
+                    action = int(logits.argmax().item())
+
+                if mask[action] < 0.5:
+                    violations.append(
+                        {
+                            "step": steps_executed,
+                            "agent": agent,
+                            "action": action,
+                            "mask": mask.tolist(),
+                        }
+                    )
+
+                wrapped.step(action)
+                steps_executed += 1
+        finally:
+            wrapped.close()
+
+        self.assertGreater(steps_executed, 0, "No steps were executed")
+        self.assertEqual(
+            violations,
+            [],
+            f"RLModule selected {len(violations)} illegal macro action(s): {violations}",
+        )
+
+    # ------------------------------------------------------------------
+    # Environment stepping sanity check (no RLlib)
+    # ------------------------------------------------------------------
+
+    def test_action_mask_enforced_during_env_stepping(self):
+        """Wrapper must always expose at least one legal macro action per step."""
+        from rl_env import UncivEnv
+        from rl_env.wrappers import UncivMacroWrapper
+
+        aec_env = UncivEnv(
+            base_url=_SERVER_URL,
+            num_agents=2,
+            num_ai=0,
+            num_city_states=0,
+            no_barbarians=True,
+            include_map_planes=False,
+        )
+        wrapped = UncivMacroWrapper(aec_env, include_map_planes=False)
+        wrapped.reset(seed=1)
+
+        steps_executed = 0
+        try:
+            while wrapped.agents and steps_executed < 30:
+                agent = wrapped.agent_selection
+                obs = wrapped.observe(agent)
+                mask = obs["action_mask"]
+                legal = np.where(mask > 0.5)[0]
+
+                self.assertGreater(
+                    len(legal),
+                    0,
+                    f"Step {steps_executed}: no legal actions for agent {agent}",
+                )
+                action = int(np.random.choice(legal))
+                self.assertIn(
+                    action,
+                    legal,
+                    f"Step {steps_executed}: randomly chosen action {action} not in legal set",
+                )
+                wrapped.step(action)
+                steps_executed += 1
+        finally:
+            wrapped.close()
+
+        self.assertGreater(steps_executed, 0, "No steps were executed")
+
+    # ------------------------------------------------------------------
+    # Continued training stability
+    # ------------------------------------------------------------------
+
+    def test_additional_training_iterations(self):
+        """2 more PPO iterations on the shared algorithm must succeed."""
+        for i in range(2):
+            with self.subTest(extra_iteration=i + 1):
+                result = self.algo.train()
+                self.assertIn(
+                    "env_runners",
+                    result,
+                    f"Extra training iteration {i + 1} missing 'env_runners'",
+                )
 
 
 if __name__ == "__main__":

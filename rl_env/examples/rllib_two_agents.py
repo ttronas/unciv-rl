@@ -284,7 +284,7 @@ def build_ppo_config(
         Pass ``True`` to include the spatial map channels in the observation.
     """
     if not _HAS_RAY:
-        raise ImportError("ray[rllib] and torch are required.  Install with: pip install 'ray[rllib]' torch")
+        raise ImportError("ray[rllib] and torch are required. Install with: pip install 'ray[rllib]' torch")
 
     env_config = {
         "base_url": base_url,
@@ -381,7 +381,7 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     if not _HAS_RAY:
-        raise SystemExit("ray[rllib] and torch are required.  Install with: pip install 'ray[rllib]' torch")
+        raise SystemExit("ray[rllib] and torch are required. Install with: pip install 'ray[rllib]' torch")
 
     args = _parse_args()
 
