@@ -437,7 +437,7 @@ class TestRLlibTraining(unittest.TestCase):
         config = build_ppo_config(
             base_url=_SERVER_URL,
             num_iterations=1,
-            num_env_runners=1,
+            num_env_runners=0,
             train_batch_size=200,
             include_map_planes=False,
         )
