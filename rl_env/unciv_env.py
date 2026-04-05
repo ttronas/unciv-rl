@@ -115,8 +115,12 @@ class UncivEnv(AECEnv):
         self._player_to_civ: dict[str, str] = {}
         self._spaces: UncivSpaces | None = None
 
-        # PettingZoo required attributes
-        self.possible_agents: list[str] = []
+        # PettingZoo required attributes.
+        # Pre-populate possible_agents so wrappers that read it at construction
+        # time (e.g. supersuit's pettingzoo_env_to_vec_env_v1) work before the
+        # first reset().  The real names come from the server on reset(), but
+        # they are always "player_0", "player_1", ... so we can set them here.
+        self.possible_agents: list[str] = [f"player_{i}" for i in range(num_agents)]
         self.agents: list[str] = []
         self.agent_selection: str = ""
 
