@@ -175,7 +175,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install pettingzoo gymnasium numpy requests pytest
-          pip install stable-baselines3 sb3-contrib
+          pip install stable-baselines3 sb3-contrib supersuit
 
       - name: Run MaskablePPO integration tests (live server)
         env:
