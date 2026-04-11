@@ -206,7 +206,7 @@ class ManagedServer:
         self._proc = subprocess.Popen(
             [
                 "java", "-jar", self.jar_path,
-                "--rl", "--no-auth", "--no-chat",
+                "--rl", "-no-auth", "-no-chat",
                 "-p", str(self.port),
             ],
             cwd=self.assets_dir,
