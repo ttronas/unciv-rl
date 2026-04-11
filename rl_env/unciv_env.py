@@ -223,13 +223,14 @@ class UncivEnv(AECEnv):
         # order and requires self.agents[0] == agent_selection at the start of
         # each parallel step().  The server may choose any player to go first,
         # so we rotate the list here to guarantee the invariant holds.
-        # possible_agents is also rotated to match: supersuit's MarkovVectorEnv
-        # asserts agents == possible_agents (order-sensitive) after every step,
-        # so both lists must stay in the same order at all times.
+        # NOTE: do NOT rotate possible_agents — aec_to_parallel_wrapper copies
+        # possible_agents once at __init__ and never updates it, so changing
+        # it here has no effect on par_env.possible_agents.  The resulting
+        # agents != possible_agents mismatch is handled by black_death=True in
+        # make_unciv_vec_env().
         first_idx = self.agents.index(self.agent_selection)
         if first_idx != 0:
             self.agents = self.agents[first_idx:] + self.agents[:first_idx]
-            self.possible_agents = list(self.agents)
         self._agent_selector = AgentSelector(self.agents)
 
         # Fetch initial observations and masks for all agents
@@ -305,7 +306,10 @@ class UncivEnv(AECEnv):
         if done:
             for agent in self.agents:
                 self.terminations[agent] = True
-            self.agents = []
+            # Clear in-place (not reassignment) so that aec_to_parallel's list
+            # iterator (which holds a reference to this same list object) sees
+            # the empty list and stops mid-cycle without an agent-order assertion.
+            self.agents.clear()
         else:
             # Advance agent selection (the server already moved to next agent after END_TURN)
             if wire_action.get("macro") == MACRO_END_TURN:

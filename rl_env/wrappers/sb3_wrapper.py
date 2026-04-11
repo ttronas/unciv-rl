@@ -316,6 +316,7 @@ def make_unciv_vec_env(
     """
     import supersuit as ss
     from pettingzoo.utils.conversions import aec_to_parallel
+    from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
 
     from rl_env import UncivEnv
 
@@ -334,8 +335,14 @@ def make_unciv_vec_env(
     # Convert AEC → Parallel (required by pettingzoo_env_to_vec_env_v1)
     par_env = aec_to_parallel(aec_env)
 
-    # Parallel → VecEnv (num_envs = num_agents)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(par_env)
+    # Parallel → VecEnv (num_envs = num_agents).
+    # Use black_death=True to suppress the agents == possible_agents assertion:
+    # aec_to_parallel_wrapper freezes possible_agents at __init__ time, so after
+    # reset() rotates aec_env.agents (to align agents[0] with agent_selection),
+    # par_env.agents and par_env.possible_agents have different orderings.
+    # black_death=True skips the order-sensitive equality check and is safe here
+    # because all agents in our game are always active until the episode ends.
+    vec_env = MarkovVectorEnv(par_env, black_death=True)
 
     # Stack num_copies of the VecEnv (each copy is a deep clone via cloudpickle)
     sb3_vec = ss.concat_vec_envs_v1(
