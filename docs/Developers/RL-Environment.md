@@ -382,3 +382,76 @@ To run the integration tests you must have the server running and set the
 _SKIP_INTEGRATION = False
 ```
 
+---
+
+## Running the Parallel-Training Tests
+
+`rl_env/tests/test_parallel_training.py` contains tests for Options 1–5.
+Tests auto-skip when the required infrastructure is not available.
+
+### Single-server tests (Options 1, 4, 5)
+
+Only a single running server is required:
+
+```bash
+UNCIV_RL_URL=http://localhost:8080 python -m pytest \
+    rl_env/tests/test_parallel_training.py \
+    -k "Option1 or Option4 or Option5" -v
+```
+
+### Multi-server tests (Options 2, 3)
+
+**Option A – pre-started servers**
+
+Start the servers manually on different ports, then pass them via
+`UNCIV_RL_URLS`:
+
+```bash
+# Terminal 1 (from android/assets/)
+java -jar ../../server/build/libs/server.jar --rl --no-auth --no-chat -p 8080
+# Terminal 2
+java -jar ../../server/build/libs/server.jar --rl --no-auth --no-chat -p 8081
+
+UNCIV_RL_URLS=http://localhost:8080,http://localhost:8081 \
+    python -m pytest rl_env/tests/test_parallel_training.py \
+    -k "Option2 or Option3" -v
+```
+
+**Option B – automatic JAR launch**
+
+Point the tests at the built JAR and assets directory; the tests will start
+and stop the server processes automatically:
+
+```bash
+UNCIV_RL_JAR=/path/to/server.jar \
+UNCIV_RL_ASSETS=/path/to/android/assets \
+    python -m pytest rl_env/tests/test_parallel_training.py -v
+```
+
+Build the JAR first if needed:
+
+```bash
+./gradlew server:jar
+# JAR will be at server/build/libs/server.jar
+```
+
+### Using Docker Compose
+
+```bash
+docker compose -f docker-compose.rl.yml up --build -d
+
+UNCIV_RL_URLS=http://localhost:8080,http://localhost:8081,http://localhost:8082,http://localhost:8083 \
+    python -m pytest rl_env/tests/test_parallel_training.py -v
+
+docker compose -f docker-compose.rl.yml down
+```
+
+### Environment variable reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UNCIV_RL_URL` | `http://localhost:8080` | Single server URL for Options 1 / 4 / 5 |
+| `UNCIV_RL_URLS` | *(unset)* | Comma-separated list of ≥2 server URLs for Options 2 / 3 |
+| `UNCIV_RL_JAR` | *(unset)* | Path to `server.jar` (enables auto-launch) |
+| `UNCIV_RL_ASSETS` | *(unset)* | Directory containing `jsons/` (used as JAR working dir) |
+
