@@ -545,6 +545,9 @@ private class UncivServerRunner : CliktCommand() {
                             val result = RLGameManager.getMutex(gameId).withLock {
                                 val currentState = RLGameManager.getGame(gameId)
                                     ?: return@withLock null
+                                // Remove the game state while holding the lock.  The mutex entry
+                                // itself is kept alive so any waiting coroutine can still acquire
+                                // it and observe getGame == null (→ 404).
                                 RLGameManager.removeGame(gameId)
                                 val ns = withContext(Dispatchers.Default) {
                                     RLGameManager.createGame(currentState.setupRequest)
@@ -555,6 +558,9 @@ private class UncivServerRunner : CliktCommand() {
                                 }
                                 Pair(ns, newObs)
                             } ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            // Clean up the old gameId's mutex now that the lock is released and
+                            // any previously waiting coroutines have been able to observe the 404.
+                            RLGameManager.cleanupMutex(gameId)
                             call.respond(ResetResponse(
                                 gameId = result.first.gameInfo.gameId,
                                 agentCivIds = result.first.agentCivIds,

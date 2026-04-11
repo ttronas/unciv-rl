@@ -193,21 +193,31 @@ object RLGameManager {
     /** Retrieve an existing game state, or null if not found. */
     fun getGame(gameId: String): RLGameState? = games[gameId]
 
-    /** Remove a game from the pool and discard its mutex.
+    /** Remove a game's state from the pool.
      *
-     * **Important ordering**: this must be called only while the caller already
-     * holds the game's [Mutex] (i.e. inside a [getMutex] `withLock` block), or
-     * after all coroutines that previously obtained a reference to the mutex via
-     * [getMutex] have completed their `withLock` blocks.  Calling [getMutex]
-     * *after* [removeGame] returns will create a new, unrelated [Mutex] object,
-     * so the new caller will not wait for any prior lock holder.
+     * This must be called **while the caller holds the game's [Mutex]**
+     * (i.e. inside a [getMutex] `withLock` block).  It removes only the
+     * [RLGameState]; the mutex entry in [gameMutexes] is intentionally kept
+     * intact so that any coroutine that is already waiting on the same mutex
+     * can still acquire it, observe that [getGame] returns `null`, and exit
+     * cleanly with a 404.
      *
-     * In practice, all RL route handlers call [getMutex] once, complete their
-     * operation (which may call [removeGame]), and then release the lock.
-     * Subsequent requests for a removed game receive a 404 from [getGame].
+     * After releasing the lock, call [cleanupMutex] to remove the orphaned
+     * mutex entry from the map.
      */
     fun removeGame(gameId: String) {
         games.remove(gameId)
+    }
+
+    /**
+     * Remove the [Mutex] entry for [gameId] from the internal map.
+     *
+     * This should be called **after the lock has been released** (i.e. after
+     * the `withLock` block that called [removeGame] has completed) to ensure
+     * that any coroutine that was waiting on the mutex can still observe
+     * `getGame == null` and return 404 before the mutex is discarded.
+     */
+    fun cleanupMutex(gameId: String) {
         gameMutexes.remove(gameId)
     }
 
