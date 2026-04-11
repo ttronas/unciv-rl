@@ -31,7 +31,8 @@ WORKDIR /app
 # Copy the built JAR.
 COPY --from=build /src/server/build/libs/server.jar ./server.jar
 
-# The server reads ruleset data from a `jsons/` directory in the working dir.
+# The server reads ruleset data from a `jsons/` directory in the working dir
+# (i.e. /app/jsons inside the container).
 COPY --from=build /src/android/assets/jsons ./jsons
 
 EXPOSE 8080

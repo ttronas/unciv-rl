@@ -537,24 +537,27 @@ private class UncivServerRunner : CliktCommand() {
                         post("/reset/{gameId}") {
                             val gameId = call.parameters["gameId"]
                                 ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing gameId")
-                            val oldState = RLGameManager.getGame(gameId)
-                                ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
-                            val (newState, obs) = RLGameManager.getMutex(gameId).withLock {
+                            // Acquire the lock before checking existence so that concurrent
+                            // reset requests are serialised: the second one will see getGame
+                            // return null inside the lock and return 404.
+                            val result = RLGameManager.getMutex(gameId).withLock {
+                                val currentState = RLGameManager.getGame(gameId)
+                                    ?: return@withLock null
                                 RLGameManager.removeGame(gameId)
                                 val ns = withContext(Dispatchers.Default) {
-                                    RLGameManager.createGame(oldState.setupRequest)
+                                    RLGameManager.createGame(currentState.setupRequest)
                                 }
                                 val newObs = withContext(Dispatchers.Default) {
                                     buildObservation(ns.gameInfo, ns.gameInfo.currentPlayer,
                                         ns.agentCivIds, ns.includeMapPlanes)
                                 }
                                 Pair(ns, newObs)
-                            }
+                            } ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             call.respond(ResetResponse(
-                                gameId = newState.gameInfo.gameId,
-                                agentCivIds = newState.agentCivIds,
-                                currentAgent = newState.gameInfo.currentPlayer,
-                                observation = obs
+                                gameId = result.first.gameInfo.gameId,
+                                agentCivIds = result.first.agentCivIds,
+                                currentAgent = result.first.gameInfo.currentPlayer,
+                                observation = result.second
                             ))
                         }
 

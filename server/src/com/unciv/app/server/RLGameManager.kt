@@ -193,7 +193,19 @@ object RLGameManager {
     /** Retrieve an existing game state, or null if not found. */
     fun getGame(gameId: String): RLGameState? = games[gameId]
 
-    /** Remove a game from the pool and discard its mutex. */
+    /** Remove a game from the pool and discard its mutex.
+     *
+     * **Important ordering**: this must be called only while the caller already
+     * holds the game's [Mutex] (i.e. inside a [getMutex] `withLock` block), or
+     * after all coroutines that previously obtained a reference to the mutex via
+     * [getMutex] have completed their `withLock` blocks.  Calling [getMutex]
+     * *after* [removeGame] returns will create a new, unrelated [Mutex] object,
+     * so the new caller will not wait for any prior lock holder.
+     *
+     * In practice, all RL route handlers call [getMutex] once, complete their
+     * operation (which may call [removeGame]), and then release the lock.
+     * Subsequent requests for a removed game receive a 404 from [getGame].
+     */
     fun removeGame(gameId: String) {
         games.remove(gameId)
         gameMutexes.remove(gameId)
