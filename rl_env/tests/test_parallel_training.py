@@ -99,7 +99,7 @@ def _url_available(url: str, timeout: float = 3.0) -> bool:
     try:
         resp = requests.get(f"{url}/isalive", timeout=timeout)
         return resp.ok
-    except Exception:
+    except requests.exceptions.RequestException:
         return False
 
 
@@ -442,7 +442,7 @@ class TestOption4MultipleEnvInstances(unittest.TestCase):
         for env in self.envs:
             try:
                 env.close()
-            except Exception:
+            except requests.exceptions.RequestException:
                 pass
 
     def test_parallel_resets_return_unique_game_ids(self) -> None:
@@ -578,7 +578,7 @@ class TestOption5PerGameMutex(unittest.TestCase):
         def read_state() -> dict | None:
             try:
                 return self.client.get_state(game_id)
-            except Exception as e:  # noqa: BLE001
+            except requests.exceptions.RequestException as e:
                 errors.append(e)
                 return None
 
@@ -601,7 +601,7 @@ class TestOption5PerGameMutex(unittest.TestCase):
         def read_mask() -> dict | None:
             try:
                 return self.client.get_action_mask(game_id)
-            except Exception as e:  # noqa: BLE001
+            except requests.exceptions.RequestException as e:
                 errors.append(e)
                 return None
 
