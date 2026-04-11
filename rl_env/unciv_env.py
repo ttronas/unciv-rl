@@ -264,6 +264,11 @@ class UncivEnv(AECEnv):
             self._was_dead_step(action)
             return
 
+        # Clear per-step rewards at the start so that api_test sees only the
+        # reward earned in THIS step (not leftovers from the previous step).
+        for a in self.possible_agents:
+            self.rewards[a] = 0.0
+
         # Encode and send the action
         if action is None:
             wire_action = encode_action({"macro": MACRO_END_TURN})
@@ -296,10 +301,11 @@ class UncivEnv(AECEnv):
                     self.agent_selection = current_agent
             # Non-turn-ending actions keep the same agent active
 
-        # Update cumulative rewards
-        for agent in self.possible_agents:
-            self._cumulative_rewards[agent] = self._cumulative_rewards.get(agent, 0.0) + self.rewards.get(agent, 0.0)
-            self.rewards[agent] = 0.0
+        # Accumulate step rewards into cumulative totals.
+        # Do NOT zero self.rewards here – PettingZoo's api_test reads
+        # env.rewards after step() returns and sums them to verify that
+        # env.last()[1] (== _cumulative_rewards) stays in sync.
+        self._accumulate_rewards()
 
         # Update infos for the current agent
         if not done and self.agents:
