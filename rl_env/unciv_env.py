@@ -223,9 +223,13 @@ class UncivEnv(AECEnv):
         # order and requires self.agents[0] == agent_selection at the start of
         # each parallel step().  The server may choose any player to go first,
         # so we rotate the list here to guarantee the invariant holds.
+        # possible_agents is also rotated to match: supersuit's MarkovVectorEnv
+        # asserts agents == possible_agents (order-sensitive) after every step,
+        # so both lists must stay in the same order at all times.
         first_idx = self.agents.index(self.agent_selection)
         if first_idx != 0:
             self.agents = self.agents[first_idx:] + self.agents[:first_idx]
+            self.possible_agents = list(self.agents)
         self._agent_selector = AgentSelector(self.agents)
 
         # Fetch initial observations and masks for all agents
