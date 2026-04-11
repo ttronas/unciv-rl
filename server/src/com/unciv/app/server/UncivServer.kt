@@ -549,14 +549,14 @@ private class UncivServerRunner : CliktCommand() {
                                 // itself is kept alive so any waiting coroutine can still acquire
                                 // it and observe getGame == null (→ 404).
                                 RLGameManager.removeGame(gameId)
-                                val ns = withContext(Dispatchers.Default) {
+                                val newState = withContext(Dispatchers.Default) {
                                     RLGameManager.createGame(currentState.setupRequest)
                                 }
-                                val newObs = withContext(Dispatchers.Default) {
-                                    buildObservation(ns.gameInfo, ns.gameInfo.currentPlayer,
-                                        ns.agentCivIds, ns.includeMapPlanes)
+                                val observation = withContext(Dispatchers.Default) {
+                                    buildObservation(newState.gameInfo, newState.gameInfo.currentPlayer,
+                                        newState.agentCivIds, newState.includeMapPlanes)
                                 }
-                                Pair(ns, newObs)
+                                Pair(newState, observation)
                             } ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             // Clean up the old gameId's mutex now that the lock is released and
                             // any previously waiting coroutines have been able to observe the 404.
