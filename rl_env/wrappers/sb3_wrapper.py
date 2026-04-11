@@ -138,6 +138,38 @@ class UncivSB3PZWrapper(BaseWrapper):
         return self.env.observe(self.agent_selection)["action_mask"].astype(bool)
 
     # ------------------------------------------------------------------
+    # AEC step override – enforce strict round-robin for aec_to_parallel
+    # ------------------------------------------------------------------
+
+    def step(self, action: int | np.integer | None) -> None:
+        """Step the environment, auto-ending the turn when needed.
+
+        ``pettingzoo.utils.conversions.aec_to_parallel`` requires that
+        every call to its ``step()`` method cycles through **all** agents
+        exactly once in order.  The underlying :class:`~rl_env.UncivEnv`
+        only advances ``agent_selection`` when the action is
+        ``MACRO_END_TURN`` (0); any other action keeps the same agent
+        active, which breaks the parallel wrapper's cycle assertion.
+
+        This override detects that case and immediately issues a follow-up
+        ``MACRO_END_TURN`` (action ``0``) so that every single-action step
+        from SB3's perspective also ends the agent's in-game turn.  The
+        net effect is that each RL step = one game action + implicit turn end.
+        """
+        prev_agent = self.agent_selection
+        super().step(action)
+        # If the active agent did not change after the action (i.e. it was
+        # not an end-turn action) and the agent is still alive, force an
+        # automatic end-turn so aec_to_parallel can advance to the next agent.
+        if (
+            self.agent_selection == prev_agent
+            and not self.terminations.get(prev_agent, False)
+            and not self.truncations.get(prev_agent, False)
+            and prev_agent in self.agents
+        ):
+            super().step(0)  # MACRO_END_TURN = 0
+
+    # ------------------------------------------------------------------
     # Required by supersuit's pettingzoo_env_to_vec_env_v1
     # ------------------------------------------------------------------
 
