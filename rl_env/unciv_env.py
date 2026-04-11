@@ -216,8 +216,17 @@ class UncivEnv(AECEnv):
         self.truncations = {a: False for a in self.agents}
         self.infos = {a: {} for a in self.agents}
 
-        self._agent_selector = AgentSelector(self.agents)
         self.agent_selection = self._civ_to_player[response["currentAgent"]]
+
+        # Rotate agents list so agent_selection is first.
+        # aec_to_parallel (used by the SB3 wrapper) iterates self.agents in
+        # order and requires self.agents[0] == agent_selection at the start of
+        # each parallel step().  The server may choose any player to go first,
+        # so we rotate the list here to guarantee the invariant holds.
+        first_idx = self.agents.index(self.agent_selection)
+        if first_idx != 0:
+            self.agents = self.agents[first_idx:] + self.agents[:first_idx]
+        self._agent_selector = AgentSelector(self.agents)
 
         # Fetch initial observations and masks for all agents
         obs_json = response["observation"]
