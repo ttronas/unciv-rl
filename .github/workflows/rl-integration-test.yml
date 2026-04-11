@@ -76,6 +76,8 @@ jobs:
         env:
           UNCIV_RL_URL: http://localhost:8080
           UNCIV_RL_URLS: http://localhost:8080,http://localhost:8081
+          UNCIV_RL_JAR: ${{ github.workspace }}/server/build/libs/UncivServer.jar
+          UNCIV_RL_ASSETS: ${{ github.workspace }}/android/assets
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest rl_env/tests/ -v
 
