@@ -475,14 +475,14 @@ private class UncivServerRunner : CliktCommand() {
                         get("/state/{gameId}") {
                             val gameId = call.parameters["gameId"]
                                 ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing gameId")
-                            val state = RLGameManager.getGame(gameId)
-                                ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             val obs = RLGameManager.getMutex(gameId).withLock {
+                                val state = RLGameManager.getGame(gameId)
+                                    ?: return@withLock null
                                 withContext(Dispatchers.Default) {
                                     buildObservation(state.gameInfo, state.gameInfo.currentPlayer,
                                         state.agentCivIds, state.includeMapPlanes)
                                 }
-                            }
+                            } ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             call.respond(obs)
                         }
 
@@ -490,10 +490,12 @@ private class UncivServerRunner : CliktCommand() {
                         post("/action/{gameId}") {
                             val gameId = call.parameters["gameId"]
                                 ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing gameId")
-                            val state = RLGameManager.getGame(gameId)
-                                ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
+                            // Receive the action body before acquiring the lock to avoid holding
+                            // the mutex during request-body deserialization.
                             val action = call.receive<RLAction>()
                             val result = RLGameManager.getMutex(gameId).withLock {
+                                val state = RLGameManager.getGame(gameId)
+                                    ?: return@withLock null
                                 val gameInfo = state.gameInfo
                                 withContext(Dispatchers.Default) {
                                     val snapshot = buildEntitySnapshot(gameInfo)
@@ -513,7 +515,7 @@ private class UncivServerRunner : CliktCommand() {
                                         actionResult.copy(reward = reward.toFloat())
                                     } else actionResult
                                 }
-                            }
+                            } ?: return@post call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             call.respond(result)
                         }
 
@@ -521,15 +523,15 @@ private class UncivServerRunner : CliktCommand() {
                         get("/action_mask/{gameId}") {
                             val gameId = call.parameters["gameId"]
                                 ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing gameId")
-                            val state = RLGameManager.getGame(gameId)
-                                ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             val mask = RLGameManager.getMutex(gameId).withLock {
+                                val state = RLGameManager.getGame(gameId)
+                                    ?: return@withLock null
                                 withContext(Dispatchers.Default) {
                                     val snapshot = buildEntitySnapshot(state.gameInfo)
                                     computeActionMask(state.gameInfo, state.gameInfo.currentPlayer,
                                         state.agentCivIds, snapshot)
                                 }
-                            }
+                            } ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             call.respond(mask)
                         }
 
@@ -565,9 +567,9 @@ private class UncivServerRunner : CliktCommand() {
                         get("/done/{gameId}") {
                             val gameId = call.parameters["gameId"]
                                 ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing gameId")
-                            val state = RLGameManager.getGame(gameId)
-                                ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             val response = RLGameManager.getMutex(gameId).withLock {
+                                val state = RLGameManager.getGame(gameId)
+                                    ?: return@withLock null
                                 DoneResponse(
                                     gameId = gameId,
                                     done = state.gameInfo.victoryData != null,
@@ -577,7 +579,7 @@ private class UncivServerRunner : CliktCommand() {
                                             ?.calculateTotalScore()?.toInt() ?: 0
                                     }
                                 )
-                            }
+                            } ?: return@get call.respond(HttpStatusCode.NotFound, "Game not found: $gameId")
                             call.respond(response)
                         }
                     }
