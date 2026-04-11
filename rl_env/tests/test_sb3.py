@@ -166,12 +166,19 @@ def _make_pz_wrapper(num_agents: int = 2) -> UncivSB3PZWrapper:
 
 
 def _make_vec_env_from_mock(num_agents: int = 2):
-    """Build the full supersuit chain + _make_maskable_vec_env_wrapper from mock (no server)."""
+    """Build the full supersuit chain + _make_maskable_vec_env_wrapper from mock (no server).
+
+    Mirrors make_unciv_vec_env() exactly so that the unit tests exercise the
+    same code path as the production stack.
+    """
+    from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
+
     pz = _make_pz_wrapper(num_agents)
     par = aec_to_parallel(pz)
-    vec = ss.pettingzoo_env_to_vec_env_v1(par)
-    sb3_vec = ss.concat_vec_envs_v1(vec, 1, num_cpus=0, base_class="stable_baselines3")
-    return _make_maskable_vec_env_wrapper(sb3_vec, par)
+    vec_env = MarkovVectorEnv(par, black_death=True)
+    sb3_vec = ss.concat_vec_envs_v1(vec_env, 1, num_cpus=0, base_class="stable_baselines3")
+    live_par_envs = [markov_env.par_env for markov_env in sb3_vec.venv.vec_envs]
+    return _make_maskable_vec_env_wrapper(sb3_vec, live_par_envs)
 
 
 # ---------------------------------------------------------------------------

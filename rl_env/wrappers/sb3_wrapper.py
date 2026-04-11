@@ -182,21 +182,38 @@ class UncivSB3PZWrapper(BaseWrapper):
 # Step 5 – thin VecEnvWrapper that wires action_masks() into SB3
 # ---------------------------------------------------------------------------
 
-def _make_maskable_vec_env_wrapper(venv, par_env):
+def _make_maskable_vec_env_wrapper(venv, live_par_envs):
     """Factory: wraps a supersuit SB3VecEnv to add action_masks() support.
 
     ``supersuit``'s ``SB3VecEnvWrapper`` delegates ``has_attr`` / ``env_method``
     to ``ConcatVecEnv``, which does not implement these SB3 methods.  This
     wrapper intercepts calls for ``"action_masks"`` and reads the current mask
-    directly from the underlying :class:`UncivSB3PZWrapper` (accessible via
-    ``par_env.aec_env``).
+    directly from the underlying :class:`UncivSB3PZWrapper` instances.
+
+    ``concat_vec_envs_v1`` serialises the env tree via cloudpickle, so the
+    original ``par_env`` passed *before* construction is disconnected from
+    the live copies used during stepping.  Callers must therefore pass
+    ``live_par_envs`` — a list of the ``aec_to_parallel_wrapper`` objects
+    that are *actually* stepped, extracted via::
+
+        live_par_envs = [m.par_env for m in sb3_vec.venv.vec_envs]
 
     For each agent slot in the VecEnv:
 
     * **Active agent** (``agent_selection`` in the AEC env): returns the real
       game mask from ``UncivSB3PZWrapper.action_masks()``.
-    * **Inactive agents**: returns all-``True`` (their action is not applied to
-      the game this turn-based step; any action is masked-valid).
+    * **Inactive agents**: returns all-``True`` (their action is discarded this
+      turn-based step; any choice is nominally legal from SB3's perspective).
+
+    Parameters
+    ----------
+    venv:
+        The ``SB3VecEnvWrapper(ConcatVecEnv(...))`` returned by
+        ``concat_vec_envs_v1``.
+    live_par_envs:
+        One ``aec_to_parallel_wrapper`` per game copy, in the same order as
+        ``sb3_vec.venv.vec_envs``.  These are the *live* objects that receive
+        ``reset()`` / ``step()`` calls.
     """
     from stable_baselines3.common.vec_env import VecEnvWrapper
 
@@ -247,22 +264,22 @@ def _make_maskable_vec_env_wrapper(venv, par_env):
         def _get_action_masks(self):
             """Return one mask per VecEnv slot.
 
-            Active agent slot → real game mask.
+            Active agent slot → real game mask from the live AEC env.
             All other slots   → all-True (action is discarded this step).
             """
-            aec = self._par_env.aec_env
-            current = aec.agent_selection
             masks = []
-            for agent in self._par_env.possible_agents:
-                if agent == current and agent in aec.agents:
-                    masks.append(aec.action_masks())
-                else:
-                    masks.append(np.ones(N_MACRO_ACTIONS, dtype=bool))
+            for par in _live_par_envs:
+                aec = par.aec_env
+                current = aec.agent_selection
+                for agent in par.possible_agents:
+                    if agent == current and agent in aec.agents:
+                        masks.append(aec.action_masks())
+                    else:
+                        masks.append(np.ones(N_MACRO_ACTIONS, dtype=bool))
             return masks
 
-    wrapper = _Inner(venv)
-    wrapper._par_env = par_env
-    return wrapper
+    _live_par_envs = live_par_envs  # captured in the class closure
+    return _Inner(venv)
 
 
 # ---------------------------------------------------------------------------
@@ -285,9 +302,16 @@ def make_unciv_vec_env(
           → UncivMacroWrapper        (AEC, flat Dict obs)
           → UncivSB3PZWrapper        (AEC, Box obs + action_masks())
           → aec_to_parallel          (Parallel, parameter-sharing)
-          → pettingzoo_env_to_vec_env_v1  (VecEnv, num_envs = num_agents)
+          → MarkovVectorEnv          (VecEnv, num_envs = num_agents)
           → concat_vec_envs_v1       (stacked SB3 VecEnv)
           → _MaskableVecEnvWrapper   (adds has_attr/env_method for masks)
+
+    .. note::
+        ``concat_vec_envs_v1`` serialises the env via cloudpickle.  The live
+        env objects that actually receive ``step()`` calls live inside
+        ``ConcatVecEnv.vec_envs``.  We extract direct references to them so
+        that :func:`_make_maskable_vec_env_wrapper` reads *current* action
+        masks rather than the stale initial-state snapshot.
 
     Parameters
     ----------
@@ -349,6 +373,12 @@ def make_unciv_vec_env(
         vec_env, num_copies, num_cpus=0, base_class="stable_baselines3"
     )
 
+    # Extract live par_env references from the deep-copied envs inside
+    # ConcatVecEnv.  concat_vec_envs_v1 serialises the template via cloudpickle
+    # so the original par_env is disconnected; the live copies live in
+    # sb3_vec.venv (SB3VecEnvWrapper) → .venv (ConcatVecEnv) → .vec_envs[i].
+    live_par_envs = [markov_env.par_env for markov_env in sb3_vec.venv.vec_envs]
+
     # Add has_attr / env_method("action_masks") for MaskablePPO
-    return _make_maskable_vec_env_wrapper(sb3_vec, par_env)
+    return _make_maskable_vec_env_wrapper(sb3_vec, live_par_envs)
 
