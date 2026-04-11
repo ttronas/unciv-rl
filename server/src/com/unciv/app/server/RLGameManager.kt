@@ -11,6 +11,7 @@ import com.unciv.models.metadata.GameSetupInfo
 import com.unciv.models.metadata.Player
 import com.unciv.models.ruleset.RulesetCache
 import com.unciv.models.metadata.GameSettings
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.Serializable
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -93,13 +94,31 @@ data class RLGameState(
 /**
  * Manages a pool of in-progress RL game instances.
  *
- * Thread-safety: individual game instances are **not** thread-safe; the caller
- * must ensure that concurrent requests for the same [gameId] are serialised.
- * The per-game mutex approach is left to the HTTP route layer.
+ * Thread-safety: individual game instances are **not** thread-safe.  This
+ * manager provides a per-game [Mutex] (see [getMutex]) that the HTTP route
+ * layer uses to serialise concurrent requests that target the **same** game.
+ * Requests for different games proceed concurrently without contention.
  */
 object RLGameManager {
 
     private val games = ConcurrentHashMap<String, RLGameState>()
+
+    /**
+     * Per-game coroutine mutexes.  Each game gets one [Mutex] so that
+     * concurrent HTTP requests targeting the **same** game are serialised
+     * (important for correctness when RLlib retries or sends overlapping
+     * requests).  Different games are fully independent and make progress in
+     * parallel.
+     */
+    private val gameMutexes = ConcurrentHashMap<String, Mutex>()
+
+    /**
+     * Return the [Mutex] for [gameId], creating one on first access.
+     *
+     * Callers should wrap any read or write operation on a game inside
+     * `getMutex(gameId).withLock { … }` to prevent data races.
+     */
+    fun getMutex(gameId: String): Mutex = gameMutexes.getOrPut(gameId) { Mutex() }
 
     // -----------------------------------------------------------------------
     // Lifecycle helpers
@@ -174,9 +193,10 @@ object RLGameManager {
     /** Retrieve an existing game state, or null if not found. */
     fun getGame(gameId: String): RLGameState? = games[gameId]
 
-    /** Remove a game from the pool. */
+    /** Remove a game from the pool and discard its mutex. */
     fun removeGame(gameId: String) {
         games.remove(gameId)
+        gameMutexes.remove(gameId)
     }
 
     // -----------------------------------------------------------------------

@@ -235,6 +235,118 @@ observations, infos = env.reset()
 
 ---
 
+## Distributed Training with Ray
+
+The server stores every active game in a `ConcurrentHashMap` keyed by a unique
+`gameId`.  Each `UncivEnv` instance creates its own game on `reset()`, so
+**multiple workers can share a single server process** without collisions.  As
+the number of workers grows, the JVM becomes the CPU bottleneck.  The
+strategies below let you scale beyond that limit.
+
+### Strategy 1 – Many workers, one server (simplest)
+
+Point all Ray workers at the same `base_url`.  This works out of the box and
+requires no configuration changes.  Each worker receives a distinct `gameId`
+and the workers never interfere with each other.
+
+```python
+import ray
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
+from ray.tune.registry import register_env
+from rl_env import UncivEnv
+
+def env_creator(config):
+    return PettingZooEnv(UncivEnv(base_url="http://localhost:8080",
+                                   num_agents=1, num_ai=3))
+
+register_env("unciv_rl", env_creator)
+
+config = (
+    PPOConfig()
+    .environment("unciv_rl")
+    .rollouts(num_rollout_workers=8)   # 8 parallel workers, all → port 8080
+)
+algo = config.build()
+```
+
+Scale `num_rollout_workers` until the server's CPU is saturated, then move to
+Strategy 2.
+
+### Strategy 2 – Multiple environments per worker
+
+RLlib can run several independent environments inside each worker process via
+`num_envs_per_worker`.  Because each `UncivEnv.reset()` creates a brand-new
+`gameId`, all environments are independent regardless of how many share a
+worker.
+
+```python
+config = (
+    PPOConfig()
+    .environment("unciv_rl")
+    .rollouts(
+        num_rollout_workers=4,
+        num_envs_per_worker=4,   # 16 concurrent games total, still → port 8080
+    )
+)
+```
+
+### Strategy 3 – Multiple server instances, worker-sharded (recommended for scale-out)
+
+Run N server JARs on different ports and pin each worker to one server using
+`worker_index`.  The game state lives in-memory inside each JVM, so workers
+must always talk to the same server that created their game.
+
+```python
+NUM_SERVERS = 4  # match the number of running server instances
+
+def env_creator(config):
+    worker_idx = config.get("worker_index", 0)
+    port = 8080 + (worker_idx % NUM_SERVERS)
+    return PettingZooEnv(UncivEnv(
+        base_url=f"http://localhost:{port}",
+        num_agents=1, num_ai=3,
+    ))
+
+register_env("unciv_rl", env_creator)
+
+config = (
+    PPOConfig()
+    .environment("unciv_rl")
+    .rollouts(num_rollout_workers=16)  # 4 workers per server
+)
+```
+
+Start the four servers (adjust paths as needed):
+
+```bash
+cd android/assets
+for PORT in 8080 8081 8082 8083; do
+    java -jar ../../server/build/libs/server.jar \
+         --rl --no-auth --no-chat -p $PORT &
+done
+```
+
+### Strategy 4 – Docker Compose multi-server
+
+`docker-compose.rl.yml` at the repository root defines four pre-configured RL
+server replicas (ports 8080–8083).  Combine it with Strategy 3's
+`env_creator`:
+
+```bash
+# Build and start all four servers in the background
+docker compose -f docker-compose.rl.yml up --build -d
+
+# Check they are alive
+curl http://localhost:8080/isalive
+curl http://localhost:8083/isalive
+```
+
+Add or remove service blocks in `docker-compose.rl.yml` to change the number
+of replicas, and update `NUM_SERVERS` in the Python `env_creator` accordingly.
+
+---
+
 ## REST API Reference
 
 | Method | Path | Description |
@@ -247,6 +359,11 @@ observations, infos = env.reset()
 | GET | `/rl/done/{gameId}` | Check termination status and scores |
 
 All endpoints return JSON.  No authentication is required for RL endpoints.
+
+Concurrent requests that target **different** `gameId` values are handled in
+parallel.  Concurrent requests for the **same** `gameId` are automatically
+serialised by a per-game mutex in the server, so transient RLlib retries will
+not corrupt game state.
 
 ---
 
@@ -264,3 +381,4 @@ To run the integration tests you must have the server running and set the
 ```python
 _SKIP_INTEGRATION = False
 ```
+

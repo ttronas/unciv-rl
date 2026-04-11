@@ -1,0 +1,41 @@
+# Multi-stage build for the headless Unciv RL server.
+#
+# Stage 1 – build the server JAR.
+# Stage 2 – lightweight JRE runtime image.
+#
+# Usage (single instance, port 8080):
+#   docker build -f Dockerfile.rl-server -t unciv-rl-server .
+#   docker run -p 8080:8080 unciv-rl-server
+#
+# Use docker-compose.rl.yml to spin up multiple sharded instances.
+
+# ── Stage 1: build ───────────────────────────────────────────────────────────
+FROM eclipse-temurin:17-jdk-jammy AS build
+
+WORKDIR /src
+
+# Cache Gradle wrapper download before copying the full source tree.
+COPY gradlew gradlew.bat gradle.properties build.gradle.kts settings.gradle.kts ./
+COPY gradle ./gradle
+RUN chmod +x ./gradlew && ./gradlew --version --no-daemon -q
+
+# Build only the server JAR (fast – skips desktop/android targets).
+COPY . .
+RUN chmod +x ./gradlew && ./gradlew server:jar --no-daemon -q
+
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM eclipse-temurin:17-jre-jammy
+
+WORKDIR /app
+
+# Copy the built JAR.
+COPY --from=build /src/server/build/libs/server.jar ./server.jar
+
+# The server reads ruleset data from a `jsons/` directory in the working dir.
+COPY --from=build /src/android/assets/jsons ./jsons
+
+EXPOSE 8080
+
+# Default: RL mode, auth and chat disabled.  Override -p to change port.
+ENTRYPOINT ["java", "-jar", "server.jar", "--rl", "--no-auth", "--no-chat"]
+CMD ["-p", "8080"]
