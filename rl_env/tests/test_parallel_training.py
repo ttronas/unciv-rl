@@ -157,9 +157,9 @@ _SKIP_NO_JAR = unittest.skipUnless(
 # ---------------------------------------------------------------------------
 
 def _free_port() -> int:
-    """Find an available TCP port on localhost."""
+    """Find an available TCP port on localhost (127.0.0.1)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
@@ -513,7 +513,7 @@ class TestOption4MultipleEnvInstances(unittest.TestCase):
             for f in as_completed(futures):
                 try:
                     f.result()
-                except Exception as e:  # noqa: BLE001
+                except requests.exceptions.RequestException as e:
                     errors.append(str(e))
 
         self.assertEqual([], errors, f"Env step errors: {errors}")
@@ -685,6 +685,7 @@ class TestOption5PerGameMutex(unittest.TestCase):
             t.start()
         for t in threads:
             t.join(timeout=60.0)
+            self.assertFalse(t.is_alive(), "Reset thread did not complete within 60 s")
 
         self.assertEqual([], server_errors, f"5xx errors from concurrent reset: {server_errors}")
         # At least one reset must have succeeded
@@ -706,13 +707,13 @@ class TestOption5PerGameMutex(unittest.TestCase):
         def read_state() -> None:
             try:
                 self.client.get_state(game_id)
-            except Exception as e:  # noqa: BLE001
+            except requests.exceptions.RequestException as e:
                 errors.append(e)
 
         def read_mask() -> None:
             try:
                 self.client.get_action_mask(game_id)
-            except Exception as e:  # noqa: BLE001
+            except requests.exceptions.RequestException as e:
                 errors.append(e)
 
         def do_step() -> None:
