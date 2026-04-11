@@ -264,8 +264,16 @@ class UncivEnv(AECEnv):
             self._was_dead_step(action)
             return
 
-        # Clear per-step rewards at the start so that api_test sees only the
-        # reward earned in THIS step (not leftovers from the previous step).
+        # Zero cumulative rewards for the current agent at the start of their
+        # turn, as required by the PettingZoo AEC specification.  env.last()
+        # returns _cumulative_rewards[agent], which must equal the sum of
+        # env.rewards[agent] across all steps *since the agent last acted*.
+        # Without this reset, cumulative rewards grow unboundedly and the
+        # PettingZoo api_test assertion (`accumulated_rewards == reward`) fails.
+        self._cumulative_rewards[current_agent] = 0.0
+
+        # Clear per-step rewards for all agents so the api_test sees only the
+        # reward earned in THIS step (not leftovers from a previous step).
         for a in self.possible_agents:
             self.rewards[a] = 0.0
 
@@ -302,9 +310,6 @@ class UncivEnv(AECEnv):
             # Non-turn-ending actions keep the same agent active
 
         # Accumulate step rewards into cumulative totals.
-        # Do NOT zero self.rewards here – PettingZoo's api_test reads
-        # env.rewards after step() returns and sums them to verify that
-        # env.last()[1] (== _cumulative_rewards) stays in sync.
         self._accumulate_rewards()
 
         # Update infos for the current agent
