@@ -446,6 +446,32 @@ class TestActionRoundTrip(unittest.TestCase):
         raw = self.client.step(self.game_id, wire)
         return decode_action_result(raw)
 
+    def _advance_to_playable_state(self, n_turns: int = 20) -> None:
+        """
+        Advance the game to a state where a city exists and culture has
+        accumulated so that city-action and policy tests are exercisable.
+
+        1. If MACRO_FOUNDER_SETTLE is legal, settle the capital immediately.
+        2. Play up to *n_turns* END_TURN actions to accumulate culture and
+           populate city production options.
+
+        With Prince difficulty and seed=42 the first social policy typically
+        unlocks within ~10 turns after settling (costs 25 culture; base city
+        yields ~2-3 culture/turn), so n_turns=20 provides a comfortable margin.
+        """
+        mask = self._mask()
+        macro_mask = mask.get("macroMask", [])
+        if len(macro_mask) > MACRO_FOUNDER_SETTLE and macro_mask[MACRO_FOUNDER_SETTLE]:
+            unit_targets = [i for i, v in enumerate(mask.get("unitTargetMask", [])) if v]
+            if unit_targets:
+                self.client.step(
+                    self.game_id,
+                    encode_action({"macro": MACRO_FOUNDER_SETTLE, "unit_target": unit_targets[0]}),
+                )
+        end_turn = encode_action({"macro": MACRO_END_TURN})
+        for _ in range(n_turns):
+            self.client.step(self.game_id, end_turn)
+
     # END_TURN
     def test_end_turn_success(self):
         success, message, reward = self._step({"macro": MACRO_END_TURN})
@@ -486,10 +512,11 @@ class TestActionRoundTrip(unittest.TestCase):
 
     # POLICY_ADOPT – only when a policy is adoptable
     def test_policy_adopt_if_available(self):
+        self._advance_to_playable_state()
         mask = self._mask()
         legal_policies = [i for i, v in enumerate(mask["policyTargetMask"]) if v]
         if not legal_policies:
-            self.skipTest("No adoptable policies in this game state")
+            self.skipTest("No adoptable policies even after advancing game state")
         success, message, _ = self._step({
             "macro": MACRO_POLICY_ADOPT,
             "policy_target": legal_policies[0],
@@ -498,11 +525,12 @@ class TestActionRoundTrip(unittest.TestCase):
 
     # CITY_ACTION – only when a city exists
     def test_city_set_production_if_available(self):
+        self._advance_to_playable_state()
         mask = self._mask()
         city_indices = [i for i, v in enumerate(mask["cityTargetMask"]) if v]
         prod_indices = [i for i, v in enumerate(mask["productionTargetMask"]) if v]
         if not city_indices or not prod_indices:
-            self.skipTest("No city or no buildable production items available")
+            self.skipTest("No city or no buildable production items even after advancing game state")
         success, message, _ = self._step({
             "macro": MACRO_CITY_ACTION,
             "city_target": city_indices[0],
