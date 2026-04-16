@@ -44,6 +44,7 @@ from rl_env.action_mapper import encode_action, decode_action_result
 from rl_env.obs_parser import parse_observation, parse_action_mask
 from rl_env.constants import (
     ENTITY_FEATURES,
+    FEAT_CAN_FOUND_CITY,
     MAX_ENTITIES,
     MAX_TILES,
     N_MAP_CHANNELS,
@@ -451,7 +452,8 @@ class TestActionRoundTrip(unittest.TestCase):
         Advance the game to a state where a city exists and culture has
         accumulated so that city-action and policy tests are exercisable.
 
-        1. If MACRO_FOUNDER_SETTLE is legal, settle the capital immediately.
+        1. If a Settler exists (features[FEAT_CAN_FOUND_CITY] == 1), settle
+           the capital immediately.
         2. Play up to *n_turns* END_TURN actions to accumulate culture and
            populate city production options.
 
@@ -459,15 +461,23 @@ class TestActionRoundTrip(unittest.TestCase):
         unlocks within ~10 turns after settling (costs 25 culture; base city
         yields ~2-3 culture/turn), so n_turns=20 provides a comfortable margin.
         """
-        mask = self._mask()
-        macro_mask = mask.get("macroMask", [])
-        if len(macro_mask) > MACRO_FOUNDER_SETTLE and macro_mask[MACRO_FOUNDER_SETTLE]:
-            unit_targets = [i for i, v in enumerate(mask.get("unitTargetMask", [])) if v]
-            if unit_targets:
-                self.client.step(
-                    self.game_id,
-                    encode_action({"macro": MACRO_FOUNDER_SETTLE, "unit_target": unit_targets[0]}),
-                )
+        # Identify the settler entity index from the observation features.
+        # We cannot rely on unitTargetMask[0] because that picks the first
+        # *actionable* unit which may be a Warrior rather than the Settler.
+        state = self.client.get_state(self.game_id)
+        settler_index = None
+        for i, ent in enumerate(state.get("entities", [])[:MAX_ENTITIES]):
+            features = ent.get("features", [])
+            if len(features) > FEAT_CAN_FOUND_CITY and features[FEAT_CAN_FOUND_CITY] == 1:
+                settler_index = i
+                break
+
+        if settler_index is not None:
+            self.client.step(
+                self.game_id,
+                encode_action({"macro": MACRO_FOUNDER_SETTLE, "unit_target": settler_index}),
+            )
+
         end_turn = encode_action({"macro": MACRO_END_TURN})
         for _ in range(n_turns):
             self.client.step(self.game_id, end_turn)
