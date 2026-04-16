@@ -132,6 +132,15 @@ class UncivEnv(AECEnv):
         self._action_space_cache: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
+    # Convenience properties
+    # ------------------------------------------------------------------
+
+    @property
+    def base_url(self) -> str:
+        """Base URL of the Unciv RL server this environment talks to."""
+        return self._client.base_url
+
+    # ------------------------------------------------------------------
     # Spaces (built lazily after reset())
     # ------------------------------------------------------------------
 

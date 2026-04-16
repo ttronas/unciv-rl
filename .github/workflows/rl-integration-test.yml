@@ -33,35 +33,26 @@ jobs:
       - name: Build server JAR
         run: ./gradlew server:dist
 
-      - name: Start RL server (port 8080)
+      - name: Start RL server
         working-directory: android/assets
         run: |
           java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8080 &
-          echo $! > /tmp/server1.pid
-          echo "Server 1 PID: $(cat /tmp/server1.pid)"
+          echo $! > /tmp/server.pid
+          echo "Server PID: $(cat /tmp/server.pid)"
 
-      - name: Start RL server (port 8081)
-        working-directory: android/assets
+      - name: Wait for server to be ready
         run: |
-          java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8081 &
-          echo $! > /tmp/server2.pid
-          echo "Server 2 PID: $(cat /tmp/server2.pid)"
-
-      - name: Wait for both servers to be ready
-        run: |
-          for port in 8080 8081; do
-            echo "Waiting for server on port $port..."
-            for i in $(seq 1 30); do
-              if curl -sf http://localhost:$port/isalive > /dev/null; then
-                echo "Server on port $port is ready after $i attempts"
-                break
-              fi
-              if [ $i -eq 30 ]; then
-                echo "Server on port $port did not become ready in time"
-                exit 1
-              fi
-              sleep 2
-            done
+          echo "Waiting for server on port 8080..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/isalive > /dev/null; then
+              echo "Server is ready after $i attempts"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "Server did not become ready in time"
+              exit 1
+            fi
+            sleep 2
           done
 
       - name: Set up Python
@@ -70,22 +61,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pettingzoo gymnasium numpy requests pytest
+        run: pip install pettingzoo gymnasium numpy requests pytest ray
 
       - name: Run integration tests
         env:
           UNCIV_RL_URL: http://localhost:8080
-          UNCIV_RL_URLS: http://localhost:8080,http://localhost:8081
-          UNCIV_RL_JAR: ${{ github.workspace }}/server/build/libs/UncivServer.jar
-          UNCIV_RL_ASSETS: ${{ github.workspace }}/android/assets
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest rl_env/tests/ -v
 
-      - name: Stop servers
+      - name: Stop server
         if: always()
         run: |
-          for pid_file in /tmp/server1.pid /tmp/server2.pid; do
-            if [ -f "$pid_file" ]; then
-              kill "$(cat "$pid_file")" 2>/dev/null || true
-            fi
-          done
+          if [ -f /tmp/server.pid ]; then
+            kill "$(cat /tmp/server.pid)" 2>/dev/null || true
+          fi

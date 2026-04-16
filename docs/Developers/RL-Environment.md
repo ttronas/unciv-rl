@@ -239,28 +239,36 @@ observations, infos = env.reset()
 
 The server stores every active game in a `ConcurrentHashMap` keyed by a unique
 `gameId`.  Each `UncivEnv` instance creates its own game on `reset()`, so
-**multiple workers can share a single server process** without collisions.  As
-the number of workers grows, the JVM becomes the CPU bottleneck.  The
-strategies below let you scale beyond that limit.
+**multiple Ray workers can share a single server process** without collisions.
+As the number of workers grows, the JVM becomes the CPU bottleneck; run
+additional server processes and let `make_env_creator` shard workers across
+them automatically.
 
-### Strategy 1 – Many workers, one server (simplest)
+### `make_env_creator` – the recommended entry point
 
-Point all Ray workers at the same `base_url`.  This works out of the box and
-requires no configuration changes.  Each worker receives a distinct `gameId`
-and the workers never interfere with each other.
+`rl_env.ray_env.make_env_creator` returns an `env_creator` function that is
+directly compatible with `ray.tune.registry.register_env` and the RLlib
+environment-creation protocol.  Each Ray worker selects its server via:
+
+```
+url = server_urls[config["worker_index"] % len(server_urls)]
+```
+
+No custom subprocess management or manual thread coordination is needed.
+
+### Strategy 1 – Many workers, one server
 
 ```python
 import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
 from ray.tune.registry import register_env
-from rl_env import UncivEnv
+from rl_env.ray_env import make_env_creator
 
-def env_creator(config):
-    return PettingZooEnv(UncivEnv(base_url="http://localhost:8080",
-                                   num_agents=1, num_ai=3))
+def rllib_creator(config):
+    return PettingZooEnv(make_env_creator(["http://localhost:8080"])(config))
 
-register_env("unciv_rl", env_creator)
+register_env("unciv_rl", rllib_creator)
 
 config = (
     PPOConfig()
@@ -270,13 +278,44 @@ config = (
 algo = config.build()
 ```
 
-Scale `num_rollout_workers` until the server's CPU is saturated, then move to
-Strategy 2.
+Scale `num_rollout_workers` until the server's CPU is saturated, then add more
+servers and move to Strategy 2.
 
-### Strategy 2 – Multiple environments per worker
+### Strategy 2 – Multiple server instances, worker-sharded
 
-RLlib can run several independent environments inside each worker process via
-`num_envs_per_worker`.  Because each `UncivEnv.reset()` creates a brand-new
+Start N server JARs on different ports; `make_env_creator` pins each worker to
+one server automatically.  The in-memory game state inside each JVM stays
+isolated, so workers always talk to the server that created their game.
+
+```bash
+# Start two servers from android/assets/
+java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8080 &
+java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8081 &
+```
+
+```python
+from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
+from ray.tune.registry import register_env
+from rl_env.ray_env import make_env_creator
+
+_creator = make_env_creator([
+    "http://localhost:8080",
+    "http://localhost:8081",
+])
+
+register_env("unciv_rl", lambda cfg: PettingZooEnv(_creator(cfg)))
+
+config = (
+    PPOConfig()
+    .environment("unciv_rl")
+    .rollouts(num_rollout_workers=16)  # 8 workers per server
+)
+```
+
+### Strategy 3 – Multiple environments per worker
+
+RLlib can run several independent environments inside each worker via
+`num_envs_per_worker`.  Because every `UncivEnv.reset()` creates a brand-new
 `gameId`, all environments are independent regardless of how many share a
 worker.
 
@@ -286,64 +325,10 @@ config = (
     .environment("unciv_rl")
     .rollouts(
         num_rollout_workers=4,
-        num_envs_per_worker=4,   # 16 concurrent games total, still → port 8080
+        num_envs_per_worker=4,   # 16 concurrent games total
     )
 )
 ```
-
-### Strategy 3 – Multiple server instances, worker-sharded (recommended for scale-out)
-
-Run N server JARs on different ports and pin each worker to one server using
-`worker_index`.  The game state lives in-memory inside each JVM, so workers
-must always talk to the same server that created their game.
-
-```python
-NUM_SERVERS = 4  # match the number of running server instances
-
-def env_creator(config):
-    worker_idx = config.get("worker_index", 0)
-    port = 8080 + (worker_idx % NUM_SERVERS)
-    return PettingZooEnv(UncivEnv(
-        base_url=f"http://localhost:{port}",
-        num_agents=1, num_ai=3,
-    ))
-
-register_env("unciv_rl", env_creator)
-
-config = (
-    PPOConfig()
-    .environment("unciv_rl")
-    .rollouts(num_rollout_workers=16)  # 4 workers per server
-)
-```
-
-Start the four servers (adjust paths as needed):
-
-```bash
-cd android/assets
-for PORT in 8080 8081 8082 8083; do
-    java -jar ../../server/build/libs/server.jar \
-         --rl --no-auth --no-chat -p $PORT &
-done
-```
-
-### Strategy 4 – Docker Compose multi-server
-
-`docker-compose.rl.yml` at the repository root defines four pre-configured RL
-server replicas (ports 8080–8083).  Combine it with Strategy 3's
-`env_creator`:
-
-```bash
-# Build and start all four servers in the background
-docker compose -f docker-compose.rl.yml up --build -d
-
-# Check they are alive
-curl http://localhost:8080/isalive
-curl http://localhost:8083/isalive
-```
-
-Add or remove service blocks in `docker-compose.rl.yml` to change the number
-of replicas, and update `NUM_SERVERS` in the Python `env_creator` accordingly.
 
 ---
 
@@ -382,76 +367,33 @@ To run the integration tests you must have the server running and set the
 _SKIP_INTEGRATION = False
 ```
 
+
 ---
 
-## Running the Parallel-Training Tests
+## Running the Ray Scaling Tests
 
-`rl_env/tests/test_parallel_training.py` contains tests for Options 1–5.
-Tests auto-skip when the required infrastructure is not available.
+`rl_env/tests/test_ray_scaling.py` contains two layers of tests:
 
-### Single-server tests (Options 1, 4, 5)
+**Unit tests** (`TestMakeEnvCreatorRouting`) – always run, no server or Ray
+needed.  They verify that `make_env_creator` routes each `worker_index` to the
+correct server URL.
 
-Only a single running server is required:
-
-```bash
-UNCIV_RL_URL=http://localhost:8080 python -m pytest \
-    rl_env/tests/test_parallel_training.py \
-    -k "Option1 or Option4 or Option5" -v
-```
-
-### Multi-server tests (Options 2, 3)
-
-**Option A – pre-started servers**
-
-Start the servers manually on different ports, then pass them via
-`UNCIV_RL_URLS`:
+**Ray integration tests** (`TestRayParallelWorkers`) – require a running server
+(`UNCIV_RL_URL`) and `ray` to be installed.  They launch multiple Ray remote
+tasks in parallel and verify that each receives a unique `gameId` and
+completes without errors.
 
 ```bash
-# Terminal 1 (from android/assets/)
-java -jar ../../server/build/libs/server.jar --rl --no-auth --no-chat -p 8080
-# Terminal 2
-java -jar ../../server/build/libs/server.jar --rl --no-auth --no-chat -p 8081
+# Unit tests only (no server needed)
+python -m pytest rl_env/tests/test_ray_scaling.py::TestMakeEnvCreatorRouting -v
 
-UNCIV_RL_URLS=http://localhost:8080,http://localhost:8081 \
-    python -m pytest rl_env/tests/test_parallel_training.py \
-    -k "Option2 or Option3" -v
-```
-
-**Option B – automatic JAR launch**
-
-Point the tests at the built JAR and assets directory; the tests will start
-and stop the server processes automatically:
-
-```bash
-UNCIV_RL_JAR=/path/to/server.jar \
-UNCIV_RL_ASSETS=/path/to/android/assets \
-    python -m pytest rl_env/tests/test_parallel_training.py -v
-```
-
-Build the JAR first if needed:
-
-```bash
-./gradlew server:jar
-# JAR will be at server/build/libs/server.jar
-```
-
-### Using Docker Compose
-
-```bash
-docker compose -f docker-compose.rl.yml up --build -d
-
-UNCIV_RL_URLS=http://localhost:8080,http://localhost:8081,http://localhost:8082,http://localhost:8083 \
-    python -m pytest rl_env/tests/test_parallel_training.py -v
-
-docker compose -f docker-compose.rl.yml down
+# Full suite – unit + Ray parallel tests
+UNCIV_RL_URL=http://localhost:8080 python -m pytest rl_env/tests/test_ray_scaling.py -v
 ```
 
 ### Environment variable reference
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UNCIV_RL_URL` | `http://localhost:8080` | Single server URL for Options 1 / 4 / 5 |
-| `UNCIV_RL_URLS` | *(unset)* | Comma-separated list of ≥2 server URLs for Options 2 / 3 |
-| `UNCIV_RL_JAR` | *(unset)* | Path to `server.jar` (enables auto-launch) |
-| `UNCIV_RL_ASSETS` | *(unset)* | Directory containing `jsons/` (used as JAR working dir) |
+| `UNCIV_RL_URL` | `http://localhost:8080` | URL of a running Unciv RL server |
 
