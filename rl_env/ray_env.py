@@ -2,22 +2,38 @@
 
 :func:`make_env_creator` returns an ``env_creator`` callable that is
 compatible with ``ray.tune.registry.register_env`` and the RLlib environment-
-creation protocol.  Each Ray rollout worker automatically selects its Unciv RL
-server via::
+creation protocol.
+
+**EnvRunner ↔ JVM isolation**
+
+Each RLlib *EnvRunner* (rollout worker) is identified by its ``worker_index``.
+All environments inside the **same** EnvRunner share the **same**
+``worker_index``, so they are always routed to the same Unciv JVM server.
+Different EnvRunners receive different ``worker_index`` values and are therefore
+routed to **different** JVM server processes::
 
     url = server_urls[config.get("worker_index", 0) % len(server_urls)]
 
-which distributes simulation load across multiple Unciv server JVM processes
-without any custom subprocess management or manual thread coordination.
+This means:
 
-Typical usage – single server, all workers share one JVM process::
+* EnvRunner 0 (``worker_index=0``) → ``server_urls[0]``
+* EnvRunner 1 (``worker_index=1``) → ``server_urls[1]``
+* EnvRunner 2 (``worker_index=2``) → ``server_urls[0]``   (wraps around)
+* … and so on.
+
+Game state is in-memory inside each JVM, so an EnvRunner must always talk to
+the same server that created its games.  Because routing is deterministic
+(``worker_index % len(server_urls)``), this invariant is maintained throughout
+a training run without any additional bookkeeping.
+
+Typical usage – single server, all EnvRunners share one JVM::
 
     from ray.tune.registry import register_env
     from rl_env.ray_env import make_env_creator
 
     register_env("unciv_rl", make_env_creator(["http://localhost:8080"]))
 
-Typical usage – multiple servers, workers sharded by ``worker_index``::
+Typical usage – one dedicated JVM per EnvRunner (two servers)::
 
     from ray.tune.registry import register_env
     from rl_env.ray_env import make_env_creator
@@ -29,12 +45,12 @@ Typical usage – multiple servers, workers sharded by ``worker_index``::
             "http://localhost:8081",
         ]),
     )
-    # Ray automatically routes workers:
-    #   worker 0 → :8080   worker 1 → :8081
-    #   worker 2 → :8080   worker 3 → :8081 …
+    # EnvRunner 1 (worker_index=1) → :8081
+    # EnvRunner 2 (worker_index=2) → :8080
+    # Every Env inside the same EnvRunner shares the same JVM.
 
 See ``docs/Developers/RL-Environment.md`` for full RLlib configuration
-examples.
+examples including the recommended 2-EnvRunner / 2-Env-per-runner setup.
 """
 
 from __future__ import annotations
@@ -63,13 +79,18 @@ def make_env_creator(
 
         url = server_urls[config.get("worker_index", 0) % len(server_urls)]
 
+    Because all environments inside the same RLlib EnvRunner share the same
+    ``worker_index``, they always connect to the **same** Unciv JVM server.
+    Environments in **different** EnvRunners connect to different servers,
+    giving each EnvRunner its own isolated JVM process.
+
     Parameters
     ----------
     server_urls:
         One or more Unciv RL server base URLs
-        (e.g. ``["http://localhost:8080"]``).  With a single URL every worker
-        connects to the same server.  With multiple URLs workers are
-        round-robin sharded by ``worker_index``.
+        (e.g. ``["http://localhost:8080"]``).  With a single URL every
+        EnvRunner connects to the same server.  With N URLs, EnvRunners are
+        round-robin sharded so that each gets its own dedicated JVM.
     num_agents:
         Number of RL agents per game (default ``1``).
     num_ai:
@@ -96,6 +117,8 @@ def make_env_creator(
         raise ValueError("server_urls must contain at least one URL")
 
     def env_creator(config: dict) -> UncivEnv:
+        # worker_index is the EnvRunner index.  All envs within one EnvRunner
+        # share the same worker_index and therefore the same JVM server.
         worker_index: int = config.get("worker_index", 0)
         url = urls[worker_index % len(urls)]
         return UncivEnv(

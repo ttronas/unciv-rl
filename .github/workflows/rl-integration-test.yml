@@ -33,26 +33,36 @@ jobs:
       - name: Build server JAR
         run: ./gradlew server:dist
 
-      - name: Start RL server
+      # Two independent JVM servers – one per EnvRunner.
+      # EnvRunner 0 (worker_index=1) → port 8080
+      # EnvRunner 1 (worker_index=2) → port 8081
+      - name: Start RL server for EnvRunner 0 (port 8080)
         working-directory: android/assets
         run: |
           java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8080 &
-          echo $! > /tmp/server.pid
-          echo "Server PID: $(cat /tmp/server.pid)"
+          echo $! > /tmp/server0.pid
 
-      - name: Wait for server to be ready
+      - name: Start RL server for EnvRunner 1 (port 8081)
+        working-directory: android/assets
         run: |
-          echo "Waiting for server on port 8080..."
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/isalive > /dev/null; then
-              echo "Server is ready after $i attempts"
-              break
-            fi
-            if [ $i -eq 30 ]; then
-              echo "Server did not become ready in time"
-              exit 1
-            fi
-            sleep 2
+          java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8081 &
+          echo $! > /tmp/server1.pid
+
+      - name: Wait for both servers to be ready
+        run: |
+          for port in 8080 8081; do
+            echo "Waiting for server on port $port..."
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:$port/isalive > /dev/null; then
+                echo "Server on port $port is ready after $i attempts"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "Server on port $port did not become ready in time"
+                exit 1
+              fi
+              sleep 2
+            done
           done
 
       - name: Set up Python
@@ -65,13 +75,21 @@ jobs:
 
       - name: Run integration tests
         env:
+          # Primary server URL (used by TestRayParallelWorkers and others)
           UNCIV_RL_URL: http://localhost:8080
+          # Two server URLs for EnvRunner-isolation tests.
+          # Routing: worker_index % len(urls)
+          #   worker_index=1 → urls[1] (8081)
+          #   worker_index=2 → urls[0] (8080)
+          UNCIV_RL_URLS: http://localhost:8080,http://localhost:8081
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest rl_env/tests/ -v
 
-      - name: Stop server
+      - name: Stop servers
         if: always()
         run: |
-          if [ -f /tmp/server.pid ]; then
-            kill "$(cat /tmp/server.pid)" 2>/dev/null || true
-          fi
+          for pid_file in /tmp/server0.pid /tmp/server1.pid; do
+            if [ -f "$pid_file" ]; then
+              kill "$(cat "$pid_file")" 2>/dev/null || true
+            fi
+          done

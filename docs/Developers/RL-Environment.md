@@ -239,96 +239,101 @@ observations, infos = env.reset()
 
 The server stores every active game in a `ConcurrentHashMap` keyed by a unique
 `gameId`.  Each `UncivEnv` instance creates its own game on `reset()`, so
-**multiple Ray workers can share a single server process** without collisions.
-As the number of workers grows, the JVM becomes the CPU bottleneck; run
-additional server processes and let `make_env_creator` shard workers across
-them automatically.
+multiple environments can run simultaneously without collisions.
+
+### EnvRunner ↔ JVM isolation
+
+The key scaling principle is: **each RLlib EnvRunner (rollout worker) gets its
+own dedicated JVM server process**.  All environments inside the same
+EnvRunner share that server; environments in different EnvRunners use
+different servers.  This is enforced automatically by `make_env_creator`:
+
+```
+url = server_urls[worker_index % len(server_urls)]
+```
+
+Because all envs within one EnvRunner share the same `worker_index`, they are
+always routed to the same JVM.  Different EnvRunners have different
+`worker_index` values and are therefore routed to different JVM processes.
 
 ### `make_env_creator` – the recommended entry point
 
 `rl_env.ray_env.make_env_creator` returns an `env_creator` function that is
 directly compatible with `ray.tune.registry.register_env` and the RLlib
-environment-creation protocol.  Each Ray worker selects its server via:
+environment-creation protocol.  No custom subprocess management or thread
+coordination is needed.
+
+### Reference topology: 2 EnvRunners × 2 Envs × 2 agents = 8 agents
+
+The CI pipeline validates this exact setup:
 
 ```
-url = server_urls[config["worker_index"] % len(server_urls)]
+Learner (1 node)
+    ├── EnvRunner 0 (worker_index=1) → JVM :8081
+    │       ├── Env 0  (1-vs-1, 2 RL agents)
+    │       └── Env 1  (1-vs-1, 2 RL agents)
+    └── EnvRunner 1 (worker_index=2) → JVM :8080
+            ├── Env 2  (1-vs-1, 2 RL agents)
+            └── Env 3  (1-vs-1, 2 RL agents)
 ```
 
-No custom subprocess management or manual thread coordination is needed.
-
-### Strategy 1 – Many workers, one server
+```bash
+# Start one JVM per EnvRunner
+java -jar UncivServer.jar --rl -no-auth -no-chat -p 8080 &
+java -jar UncivServer.jar --rl -no-auth -no-chat -p 8081 &
+```
 
 ```python
-import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
 from ray.tune.registry import register_env
 from rl_env.ray_env import make_env_creator
 
-def rllib_creator(config):
-    return PettingZooEnv(make_env_creator(["http://localhost:8080"])(config))
-
-register_env("unciv_rl", rllib_creator)
-
-config = (
-    PPOConfig()
-    .environment("unciv_rl")
-    .rollouts(num_rollout_workers=8)   # 8 parallel workers, all → port 8080
+_creator = make_env_creator(
+    ["http://localhost:8080", "http://localhost:8081"],
+    num_agents=2,   # 1-vs-1 game
+    num_ai=0,
 )
-algo = config.build()
-```
-
-Scale `num_rollout_workers` until the server's CPU is saturated, then add more
-servers and move to Strategy 2.
-
-### Strategy 2 – Multiple server instances, worker-sharded
-
-Start N server JARs on different ports; `make_env_creator` pins each worker to
-one server automatically.  The in-memory game state inside each JVM stays
-isolated, so workers always talk to the server that created their game.
-
-```bash
-# Start two servers from android/assets/
-java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8080 &
-java -jar ../../server/build/libs/UncivServer.jar --rl -no-auth -no-chat -p 8081 &
-```
-
-```python
-from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
-from ray.tune.registry import register_env
-from rl_env.ray_env import make_env_creator
-
-_creator = make_env_creator([
-    "http://localhost:8080",
-    "http://localhost:8081",
-])
 
 register_env("unciv_rl", lambda cfg: PettingZooEnv(_creator(cfg)))
 
 config = (
     PPOConfig()
     .environment("unciv_rl")
-    .rollouts(num_rollout_workers=16)  # 8 workers per server
+    .rollouts(
+        num_rollout_workers=2,     # 2 EnvRunners
+        num_envs_per_worker=2,     # 2 Envs per EnvRunner → 4 games, 8 agents
+    )
 )
+algo = config.build()
 ```
 
-### Strategy 3 – Multiple environments per worker
+### Strategy: Many workers, one server
 
-RLlib can run several independent environments inside each worker via
-`num_envs_per_worker`.  Because every `UncivEnv.reset()` creates a brand-new
-`gameId`, all environments are independent regardless of how many share a
-worker.
+For initial experiments before adding more JVMs, all EnvRunners can share a
+single server:
 
 ```python
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
+from ray.tune.registry import register_env
+from rl_env.ray_env import make_env_creator
+
+register_env(
+    "unciv_rl",
+    lambda cfg: PettingZooEnv(make_env_creator(["http://localhost:8080"])(cfg)),
+)
+
 config = (
     PPOConfig()
     .environment("unciv_rl")
-    .rollouts(
-        num_rollout_workers=4,
-        num_envs_per_worker=4,   # 16 concurrent games total
-    )
+    .rollouts(num_rollout_workers=4)
 )
+algo = config.build()
 ```
+
+Scale `num_rollout_workers` until the server's CPU is saturated, then add more
+JVM servers and provide multiple URLs to `make_env_creator`.
 
 ---
 
@@ -372,28 +377,39 @@ _SKIP_INTEGRATION = False
 
 ## Running the Ray Scaling Tests
 
-`rl_env/tests/test_ray_scaling.py` contains two layers of tests:
+`rl_env/tests/test_ray_scaling.py` contains three layers of tests:
 
 **Unit tests** (`TestMakeEnvCreatorRouting`) – always run, no server or Ray
-needed.  They verify that `make_env_creator` routes each `worker_index` to the
-correct server URL.
+needed.  Verify URL routing and that all envs in the same EnvRunner share
+one server while envs in different EnvRunners use different servers.
 
-**Ray integration tests** (`TestRayParallelWorkers`) – require a running server
-(`UNCIV_RL_URL`) and `ray` to be installed.  They launch multiple Ray remote
-tasks in parallel and verify that each receives a unique `gameId` and
-completes without errors.
+**Ray parallel tests** (`TestRayParallelWorkers`) – require a single server
+(`UNCIV_RL_URL`) and `ray`.  Launch multiple Ray remote tasks in parallel
+and verify unique game IDs and successful completion.
+
+**EnvRunner isolation tests** (`TestEnvRunnerIsolation`) – require two
+servers (`UNCIV_RL_URLS`) and `ray`.  Validate the reference topology:
+2 EnvRunners × 2 Envs × 2 agents = 8 agent slots, each EnvRunner on its
+own JVM.
 
 ```bash
 # Unit tests only (no server needed)
 python -m pytest rl_env/tests/test_ray_scaling.py::TestMakeEnvCreatorRouting -v
 
-# Full suite – unit + Ray parallel tests
-UNCIV_RL_URL=http://localhost:8080 python -m pytest rl_env/tests/test_ray_scaling.py -v
+# Single-server tests (TestRayParallelWorkers)
+UNCIV_RL_URL=http://localhost:8080 \
+    python -m pytest rl_env/tests/test_ray_scaling.py -k "not Isolation" -v
+
+# Full suite including EnvRunner isolation (requires two servers)
+UNCIV_RL_URL=http://localhost:8080 \
+UNCIV_RL_URLS=http://localhost:8080,http://localhost:8081 \
+    python -m pytest rl_env/tests/test_ray_scaling.py -v
 ```
 
 ### Environment variable reference
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UNCIV_RL_URL` | `http://localhost:8080` | URL of a running Unciv RL server |
+| `UNCIV_RL_URL` | `http://localhost:8080` | Primary server URL (single-server tests) |
+| `UNCIV_RL_URLS` | *(unset)* | Comma-separated list of ≥2 server URLs for EnvRunner isolation tests |
 
